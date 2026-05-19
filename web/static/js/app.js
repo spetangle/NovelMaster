@@ -1392,26 +1392,41 @@ async function viewDoc(docKey) {
         addSystemMessage('请先选择一本书');
         return;
     }
-    
+
     const docNames = {
         'planning': '创作简报',
         'story_bible': '世界观设定',
         'book_rules': '书籍规则',
         'chapter_outline': '章节大纲'
     };
-    
+
     const res = await api(`/api/books/${currentBook.id}/docs/${docKey}`);
     const previewContent = document.getElementById('preview-content');
     const previewTitle = document.getElementById('preview-title');
-    
+
+    // 获取评审报告
+    let auditHtml = '';
+    if (['story_bible', 'book_rules', 'chapter_outline'].includes(docKey)) {
+        try {
+            const auditRes = await api(`/api/docs/${currentBook.id}/${docKey}/audit`);
+            if (auditRes && auditRes.found) {
+                const statusIcon = auditRes.passed ? '✅' : '⚠️';
+                const statusText = auditRes.passed ? '通过' : '需修订';
+                auditHtml = `<div class="doc-audit-badge">${statusIcon} 评审：${statusText}</div>`;
+            }
+        } catch (e) {
+            // 忽略错误
+        }
+    }
+
     if (res.success && res.content) {
         previewTitle.textContent = docNames[docKey] || docKey;
-        previewContent.innerHTML = `<div class="preview-doc">${marked(res.content)}</div>`;
+        previewContent.innerHTML = auditHtml + `<div class="preview-doc">${marked(res.content)}</div>`;
         // 查看文档后显示引导（传递当前查看的文档键）
         setTimeout(() => showGuidance('doc_viewed', docKey), 500);
     } else {
         previewTitle.textContent = docNames[docKey] || docKey;
-        previewContent.innerHTML = '<div class="preview-empty"><p>暂无内容</p></div>';
+        previewContent.innerHTML = auditHtml + '<div class="preview-empty"><p>暂无内容</p></div>';
     }
 }
 
@@ -1439,15 +1454,104 @@ async function regenerateDoc(docKey) {
         body: JSON.stringify({ book_id: currentBook.id, doc_key: docKey })
     });
 
-    if (res.success) {
-        addSystemMessage(`✅ "${docName}"重新生成完成`);
-        await updateDocStatus();
-        await viewDoc(docKey);
-        // 显示引导提示
-        setTimeout(() => showGuidance('task_completed'), 500);
+    // 创作简报需要用户输入
+    if (res.need_input) {
+        addSystemMessage(`📝 "${docName}"需要用户输入`);
+        showPlanningModal();
+        return;
+    }
+
+    if (res.success && res.task_id) {
+        // 异步任务：开始轮询任务状态
+        addSystemMessage(`🔄 开始重新生成"${docName}"...`);
+        
+        // 启动文档生成轮询
+        startDocRegeneratePolling(res.task_id, docKey, docName);
     } else {
         addSystemMessage(`❌ 重新生成失败: ${res.message}`);
     }
+}
+
+// 文档重新生成轮询
+let docRegenerateTaskId = null;
+let docRegenerateDocKey = null;
+let docRegenerateDocName = null;
+
+async function startDocRegeneratePolling(taskId, docKey, docName) {
+    docRegenerateTaskId = taskId;
+    docRegenerateDocKey = docKey;
+    docRegenerateDocName = docName;
+    
+    // 立即检查一次
+    await checkDocRegenerateStatus();
+}
+
+async function checkDocRegenerateStatus() {
+    if (!docRegenerateTaskId) return;
+    
+    const res = await api(`/api/tasks/${docRegenerateTaskId}`);
+    if (!res.success) {
+        docRegenerateTaskId = null;
+        return;
+    }
+    
+    const task = res.task;
+    
+    // 更新进度显示
+    if (task.progress !== undefined) {
+        updateChatStatus(`正在处理: ${task.message || docRegenerateDocName} (${task.progress}%)`);
+    }
+    
+    // 任务完成
+    if (task.status === 'success' || task.status === 'failed') {
+        stopDocRegeneratePolling();
+        
+        if (task.status === 'success' && task.result) {
+            const result = task.result;
+            
+            // 显示步骤进度
+            if (result.steps && result.steps.length > 0) {
+                let stepsHtml = `📋 **${docRegenerateDocName}生成进度**\n`;
+                result.steps.forEach((step, idx) => {
+                    const icon = step.status === 'completed' ? '✅' : '🔄';
+                    const passed = step.passed === true ? ' ✅通过' : (step.passed === false ? ' ⚠️需修订' : '');
+                    const score = step.score !== undefined ? ` (${step.score}分)` : '';
+                    stepsHtml += `${icon} ${step.name}${score}${passed}\n`;
+                });
+                addAIMessage(stepsHtml);
+            } else {
+                addSystemMessage(`✅ "${docRegenerateDocName}"重新生成完成`);
+            }
+            
+            // 显示评审结果
+            if (result.audit_passed !== undefined) {
+                const auditIcon = result.audit_passed ? '✅' : '⚠️';
+                const auditMsg = result.audit_passed ? '评审通过' : '评审未通过';
+                const score = result.audit_score !== undefined ? `（${result.audit_score}分）` : '';
+                addSystemMessage(`${auditIcon} 评审结果: ${auditMsg}${score}`);
+            }
+            
+            await updateDocStatus();
+            if (docRegenerateDocKey) {
+                await viewDoc(docRegenerateDocKey);
+            }
+            // 显示引导提示
+            setTimeout(() => showGuidance('task_completed'), 500);
+        } else {
+            addSystemMessage(`❌ 重新生成失败: ${task.message || '未知错误'}`);
+        }
+        updateChatStatus('');
+        return;
+    }
+    
+    // 继续轮询
+    setTimeout(checkDocRegenerateStatus, 2000);
+}
+
+function stopDocRegeneratePolling() {
+    docRegenerateTaskId = null;
+    docRegenerateDocKey = null;
+    docRegenerateDocName = null;
 }
 
 async function createDoc(docKey) {
@@ -3438,14 +3542,26 @@ async function regenerateDocFile(key) {
             });
 
             if (res.success) {
-                addSystemMessage(`✅ "${cfg.name}"重新生成完成`);
+                // 显示步骤进度
+                if (res.steps && res.steps.length > 0) {
+                    let stepsHtml = `📋 **${cfg.name}生成进度**\n`;
+                    res.steps.forEach((step, idx) => {
+                        const icon = step.status === 'completed' ? '✅' : '🔄';
+                        const passed = step.passed === true ? ' ✅通过' : (step.passed === false ? ' ⚠️需修订' : '');
+                        stepsHtml += `${icon} ${step.name}${passed}\n`;
+                    });
+                    addAIMessage(stepsHtml);
+                } else {
+                    addSystemMessage(`✅ "${cfg.name}"重新生成完成`);
+                }
 
                 // 显示评审结果（世界观和规则）
                 if (res.audit_passed !== undefined) {
+                    const revisionInfo = res.revision_count > 0 ? `（修订${res.revision_count}次）` : '';
                     if (res.audit_passed) {
-                        addSystemMessage(`📋 评审结果：✅ 通过`);
+                        addSystemMessage(`📋 评审结果：✅ 通过${revisionInfo}`);
                     } else {
-                        addSystemMessage(`📋 评审结果：⚠️ 需修订\n${res.audit_details || ''}`);
+                        addSystemMessage(`📋 评审结果：⚠️ 需修订${revisionInfo}\n${res.audit_details || ''}`);
                     }
                 }
 

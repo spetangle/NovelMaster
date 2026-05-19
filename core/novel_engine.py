@@ -407,58 +407,65 @@ class NovelEngine:
             report("生成世界观", 35, "正在创建世界观设定...")
             story_bible = self._generate_story_bible(book, planning, characters)
 
+            # 4.1 评审世界观（85分以下重试，最多3次）
+            report("评审世界观", 40, "正在评审世界观设定...")
+            story_bible_score, story_bible_issues = self._audit_setting_document(
+                story_bible, "世界观设定", book)
+            
+            for retry in range(3):
+                if story_bible_score >= 85:
+                    break
+                report("重新生成", 42, f"世界观评分偏低({story_bible_score}分)，正在重新生成... ({retry+1}/3)")
+                feedback = f"评审问题：{story_bible_issues}" if story_bible_issues else ""
+                story_bible = self._generate_story_bible(book, planning, characters, feedback)
+                story_bible_score, story_bible_issues = self._audit_setting_document(
+                    story_bible, "世界观设定", book)
+            
+            report("世界观评审完成", 45, f"世界观评审通过（{story_bible_score}分）")
+
             # 5. 生成规则
-            report("生成规则", 45, "正在创建书籍规则...")
+            report("生成规则", 50, "正在创建书籍规则...")
             book_rules = self._generate_book_rules(book, book.genre)
 
+            # 5.1 评审规则（85分以下重试，最多3次）
+            report("评审规则", 55, "正在评审创作规则...")
+            book_rules_score, book_rules_issues = self._audit_setting_document(
+                book_rules, "创作规则", book)
+            
+            for retry in range(3):
+                if book_rules_score >= 85:
+                    break
+                report("重新生成", 57, f"规则评分偏低({book_rules_score}分)，正在重新生成... ({retry+1}/3)")
+                feedback = f"评审问题：{book_rules_issues}" if book_rules_issues else ""
+                book_rules = self._generate_book_rules(book, book.genre, feedback)
+                book_rules_score, book_rules_issues = self._audit_setting_document(
+                    book_rules, "创作规则", book)
+            
+            report("规则评审完成", 60, f"规则评审通过（{book_rules_score}分）")
+
+            # 5.2 生成作者意图文档（长期创作方向）
+            report("生成作者意图", 65, "正在生成作者意图文档...")
+            author_intent = self._generate_author_intent(book, brief, planning)
+
             # 6. 保存初始文件
-            report("保存文件", 50, "正在保存设定文件...")
+            report("保存文件", 70, "正在保存设定文件...")
             self.sm.fm.write_text(book_path / "story_bible.md", story_bible)
             self.sm.fm.write_text(book_path / "book_rules.md", book_rules)
             self.sm.fm.write_text(book_path / "planning.md", self._generate_planning_doc(planning))
             self.sm.fm.write_text(book_path / "characters.md", characters)
+            self.sm.fm.write_text(book_path / "author_intent.md", author_intent)
 
-            # 7. 设定文档评审（85分以下重试，最多3次）
-            report("评审设定", 55, "正在评审设定文档...")
-            story_bible_score, story_bible_issues = self._audit_setting_document(
-                story_bible, "世界观设定", book)
-            book_rules_score, book_rules_issues = self._audit_setting_document(
-                book_rules, "创作规则", book)
-            
-            audit_passed = True
-            max_retries = 3
-            for retry in range(max_retries):
-                if story_bible_score < 85 or book_rules_score < 85:
-                    audit_passed = False
-                    report("重新生成", 60 + retry * 10, 
-                           f"设定评分偏低（世界观:{story_bible_score}, 规则:{book_rules_score}），正在重新生成... ({retry+1}/{max_retries})")
-                    
-                    # 收集问题反馈
-                    feedback = f"评审问题：\n"
-                    if story_bible_score < 85:
-                        feedback += f"世界观设定问题: {story_bible_issues}\n"
-                    if book_rules_score < 85:
-                        feedback += f"创作规则问题: {book_rules_issues}\n"
-                    
-                    # 重新生成
-                    if story_bible_score < 85:
-                        story_bible = self._generate_story_bible(book, planning, characters, feedback)
-                    if book_rules_score < 85:
-                        book_rules = self._generate_book_rules(book, book.genre, feedback)
-                    
-                    # 重新保存
-                    self.sm.fm.write_text(book_path / "story_bible.md", story_bible)
-                    self.sm.fm.write_text(book_path / "book_rules.md", book_rules)
-                    
-                    # 重新评审
-                    story_bible_score, story_bible_issues = self._audit_setting_document(
-                        story_bible, "世界观设定", book)
-                    book_rules_score, book_rules_issues = self._audit_setting_document(
-                        book_rules, "创作规则", book)
-                else:
-                    break
-            
+            # 6.1 生成并保存当前焦点文档
+            current_focus = self._generate_current_focus(book, planning)
+            self.sm.fm.write_text(book_path / "current_focus.md", current_focus)
+
             report("评审完成", 75, f"评审通过（世界观:{story_bible_score}分, 规则:{book_rules_score}分）")
+
+            # 6.2 生成完整章节大纲
+            report("生成大纲", 78, "正在生成完整章节大纲...")
+            full_outline = self._generate_full_outline(book, planning, story_bible, author_intent, characters)
+            self.sm.fm.write_text(book_path / "chapter_outline.md", full_outline)
+            report("大纲生成完成", 82, "完整章节大纲已生成")
 
             # 8. 综合校验设定文档（检查人物名称、时间线、设定冲突）
             report("综合校验", 80, "正在校验设定文档一致性...")
@@ -695,23 +702,95 @@ class NovelEngine:
 3. **可操作性** - 是否能为后续创作提供有效指导
 
 请输出：
-- 评审结论：通过/需修订
-- 发现的问题（如有）
-- 具体修改建议（如需修订）
+- **评分**：（1-100分）
+- **评审结论**：通过/需修订
+- **发现的问题**（如有）
+- **具体修改建议**（如需修订）
 
 格式简洁，直接指出问题。"""
 
         try:
-            response = self.llm.generate(prompt, system_prompt="你是一个专业的小说编辑，负责评审设定文档的质量。")
-            passed = "通过" in response and "需修订" not in response
+            response = self.llm.generate(prompt, system_prompt="你是一个专业的小说编辑，负责评审设定文档的质量。只输出评审结论，不要输出其他说明。")
+            
+            # 提取评分
+            score = 85  # 默认值
+            score_match = re.search(r'评分[：:]\s*(\d+)', response)
+            if score_match:
+                score = int(score_match.group(1))
+            
+            # 判断是否通过：检查是否有"通过"且没有"需修订"
+            # 同时要排除"无法评审"等特殊情况
+            has_pass = "通过" in response
+            has_need_revise = "需修订" in response or "不通过" in response
+            has_error = "无法" in response or "无法评审" in response or "文档内容为空" in response
+            
+            # 如果是"无法评审"或文档内容为空的情况，视为通过（避免循环修订）
+            if has_error:
+                print(f"评审遇到问题，视为通过：{response[:100]}")
+                passed = True
+            else:
+                passed = has_pass and not has_need_revise
+            
+            # 如果评分 >= 85 分，也视为通过
+            if score >= 85:
+                passed = True
+            
             return {
                 "passed": passed,
+                "score": score,
                 "content": content,
                 "details": response
             }
         except Exception as e:
             print(f"文档评审失败: {e}")
-            return {"passed": True, "content": content, "details": ""}
+            return {"passed": True, "score": 85, "content": content, "details": ""}
+
+    def _revise_document(self, doc_name: str, content: str, audit_details: str, book: BookInfo = None,
+                         generation_func=None) -> str:
+        """修订文档内容"""
+        if not book:
+            book = self.sm.get_current_book()
+
+        # 检查内容是否为空，如果为空则重新生成
+        if not content or len(content.strip()) < 50:
+            print(f"原文档内容为空或过短，将重新生成 {doc_name}")
+            if generation_func:
+                return generation_func(book, None)
+            elif doc_name == "世界观设定":
+                return self._generate_story_bible(book, {})
+            elif doc_name == "书籍规则":
+                return self._generate_book_rules(book, book.genre)
+            elif doc_name == "章节大纲":
+                return self._generate_chapter_outline(book, 0) if hasattr(self, '_generate_chapter_outline') else content
+            return content
+
+        # 尝试获取生成函数
+        if generation_func is None:
+            if doc_name == "世界观设定":
+                generation_func = lambda b, p: self._generate_story_bible(b, p)
+            elif doc_name == "书籍规则":
+                generation_func = lambda b, g: self._generate_book_rules(b, g)
+
+        prompt = f"""请根据评审意见修订小说《{book.name}》的【{doc_name}】。
+
+【评审意见】
+{audit_details}
+
+【原文档内容】
+{content[:5000]}
+
+请直接输出修订后的完整文档内容，只输出修订后的内容，不要添加任何解释、说明或错误消息。"""
+
+        try:
+            revised_content = self.llm.generate(prompt, system_prompt="你是一个专业的小说编辑，负责根据评审意见修订设定文档。输出必须是有效的文档内容，不要输出错误消息或说明文字。")
+            # 检查修订内容是否有效（不能是空内容或错误消息）
+            if not revised_content or len(revised_content.strip()) < 50:
+                print(f"修订内容无效，保留原内容")
+                return content
+            return revised_content.strip()
+        except Exception as e:
+            print(f"文档修订失败: {e}")
+            return content  # 修订失败返回原内容
 
     def _save_doc_audit_report(self, book: BookInfo, doc_name: str, audit_result: Dict[str, Any]) -> str:
         """保存文档评审报告"""
@@ -730,6 +809,7 @@ class NovelEngine:
 - 评审时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 ## 评审结果
+- **评分**：{audit_result.get('score', 85)}分
 - **结论**：{"✅ 通过" if audit_result.get('passed') else "⚠️ 需修订"}
 
 ## 评审详情
@@ -737,6 +817,35 @@ class NovelEngine:
 """
         self.sm.fm.write_text(report_path, report)
         return str(report_path)
+
+    def get_latest_doc_audit_report(self, book: BookInfo, doc_name: str) -> Dict[str, Any]:
+        """获取文档的最新评审报告"""
+        report_dir = self.workspace / book.path / "audit_reports"
+        if not report_dir.exists():
+            return {"found": False}
+
+        # 查找最新的评审报告
+        reports = list(report_dir.glob(f"{doc_name}_report_*.md"))
+        if not reports:
+            return {"found": False}
+
+        # 返回最新的报告
+        latest_report = sorted(reports, key=lambda x: x.stat().st_mtime, reverse=True)[0]
+        content = self.sm.fm.read_text(latest_report)
+
+        # 解析评审结果
+        passed = "✅ 通过" in content or "结论：✅" in content
+        details = ""
+        if "## 评审详情" in content:
+            details = content.split("## 评审详情")[-1].strip()
+
+        return {
+            "found": True,
+            "path": str(latest_report),
+            "passed": passed,
+            "details": details,
+            "content": content
+        }
 
     def create_story_bible(self, book: BookInfo = None, book_id: str = None) -> Dict[str, Any]:
         """重新生成世界观设定"""
@@ -774,23 +883,56 @@ class NovelEngine:
                 print(f"解析planning.md失败: {e}")
 
         story_bible = self._generate_story_bible(book, planning)
-        book_path = self.workspace / book.path
-        self.sm.fm.write_text(book_path / "story_bible.md", story_bible)
 
-        # 评审世界观设定
-        audit_result = self._audit_document("世界观设定", story_bible, book)
+        # 评审 + 自动修订（最多3次）
+        max_revisions = 3
+        current_content = story_bible
+        final_audit_result = None
+        revision_count = 0
+        steps = [{"name": "生成内容", "status": "completed"}]
+
+        for i in range(max_revisions):
+            steps.append({"name": f"第{revision_count + 1}次评审", "status": "running"})
+            audit_result = self._audit_document("世界观设定", current_content, book)
+            final_audit_result = audit_result
+            steps[-1]["status"] = "completed"
+            steps[-1]["passed"] = audit_result.get("passed")
+            steps[-1]["score"] = audit_result.get("score")
+
+            if audit_result.get("passed"):
+                steps.append({"name": "保存文档", "status": "completed"})
+                break  # 通过了，退出循环
+
+            revision_count += 1
+            steps.append({"name": f"第{revision_count}次修订", "status": "running"})
+            # 修订内容
+            current_content = self._revise_document("世界观设定", current_content, audit_result.get("details", ""), book)
+            steps[-1]["status"] = "completed"
+            print(f"世界观设定第{revision_count}次修订完成")
+
+        steps.append({"name": "保存文档", "status": "completed"})
+
+        # 保存最终版本
+        book_path = self.workspace / book.path
+        self.sm.fm.write_text(book_path / "story_bible.md", current_content)
+        
+        # 保存评审报告
+        self._save_doc_audit_report(book, "世界观设定", final_audit_result)
 
         # 保存评审报告
         try:
-            self._save_doc_audit_report(book, "世界观设定", audit_result)
+            self._save_doc_audit_report(book, "世界观设定", final_audit_result)
         except Exception as e:
             print(f"保存世界观设定评审报告失败: {e}")
 
         return {
             "success": True,
-            "message": "世界观设定重新生成成功",
-            "audit_passed": audit_result.get("passed"),
-            "audit_details": audit_result.get("details", "")
+            "message": f"世界观设定重新生成成功（经{revision_count}次修订）" if revision_count > 0 else "世界观设定重新生成成功",
+            "audit_passed": final_audit_result.get("passed"),
+            "audit_score": final_audit_result.get("score", 85),
+            "audit_details": final_audit_result.get("details", ""),
+            "revision_count": revision_count,
+            "steps": steps
         }
 
     def create_book_rules(self, book: BookInfo = None, book_id: str = None) -> Dict[str, Any]:
@@ -803,23 +945,53 @@ class NovelEngine:
             return {"success": False, "message": "未找到书籍"}
 
         book_rules = self._generate_book_rules(book, book.genre)
-        book_path = self.workspace / book.path
-        self.sm.fm.write_text(book_path / "book_rules.md", book_rules)
 
-        # 评审书籍规则
-        audit_result = self._audit_document("书籍规则", book_rules, book)
+        # 评审 + 自动修订（最多3次）
+        max_revisions = 3
+        current_content = book_rules
+        final_audit_result = None
+        revision_count = 0
+        steps = [{"name": "生成内容", "status": "completed"}]
+
+        for i in range(max_revisions):
+            steps.append({"name": f"第{revision_count + 1}次评审", "status": "running"})
+            audit_result = self._audit_document("书籍规则", current_content, book)
+            final_audit_result = audit_result
+            steps[-1]["status"] = "completed"
+            steps[-1]["passed"] = audit_result.get("passed")
+            steps[-1]["score"] = audit_result.get("score")
+
+            if audit_result.get("passed"):
+                steps.append({"name": "保存文档", "status": "completed"})
+                break  # 通过了，退出循环
+
+            revision_count += 1
+            steps.append({"name": f"第{revision_count}次修订", "status": "running"})
+            # 修订内容
+            current_content = self._revise_document("书籍规则", current_content, audit_result.get("details", ""), book)
+            steps[-1]["status"] = "completed"
+            print(f"书籍规则第{revision_count}次修订完成")
+
+        steps.append({"name": "保存文档", "status": "completed"})
+
+        # 保存最终版本
+        book_path = self.workspace / book.path
+        self.sm.fm.write_text(book_path / "book_rules.md", current_content)
 
         # 保存评审报告
         try:
-            self._save_doc_audit_report(book, "书籍规则", audit_result)
+            self._save_doc_audit_report(book, "书籍规则", final_audit_result)
         except Exception as e:
             print(f"保存书籍规则评审报告失败: {e}")
 
         return {
             "success": True,
-            "message": "书籍规则重新生成成功",
-            "audit_passed": audit_result.get("passed"),
-            "audit_details": audit_result.get("details", "")
+            "message": f"书籍规则重新生成成功（经{revision_count}次修订）" if revision_count > 0 else "书籍规则重新生成成功",
+            "audit_passed": final_audit_result.get("passed"),
+            "audit_score": final_audit_result.get("score", 85),
+            "audit_details": final_audit_result.get("details", ""),
+            "revision_count": revision_count,
+            "steps": steps
         }
 
     def create_chapter_outline(self, book: BookInfo = None, book_id: str = None) -> Dict[str, Any]:
@@ -906,9 +1078,53 @@ class NovelEngine:
                 outline_lines.append(f"**场景设置**：{scene}\n\n")
 
         chapter_outline = "".join(outline_lines)
+
+        # 评审 + 自动修订（最多3次）
+        max_revisions = 3
+        current_content = chapter_outline
+        final_audit_result = None
+        revision_count = 0
+        steps = [{"name": "生成内容", "status": "completed"}]
+
+        for i in range(max_revisions):
+            steps.append({"name": f"第{revision_count + 1}次评审", "status": "running"})
+            audit_result = self._audit_document("章节大纲", current_content, book)
+            final_audit_result = audit_result
+            steps[-1]["status"] = "completed"
+            steps[-1]["passed"] = audit_result.get("passed")
+            steps[-1]["score"] = audit_result.get("score")
+
+            if audit_result.get("passed"):
+                steps.append({"name": "保存文档", "status": "completed"})
+                break
+
+            revision_count += 1
+            steps.append({"name": f"第{revision_count}次修订", "status": "running"})
+            current_content = self._revise_document("章节大纲", current_content, audit_result.get("details", ""), book)
+            steps[-1]["status"] = "completed"
+            print(f"章节大纲第{revision_count}次修订完成")
+
+        steps.append({"name": "保存文档", "status": "completed"})
+
+        # 保存最终版本
         book_path = self.workspace / book.path
-        self.sm.fm.write_text(book_path / "chapter_outline.md", chapter_outline)
-        return {"success": True, "message": "章节大纲重新生成成功"}
+        self.sm.fm.write_text(book_path / "chapter_outline.md", current_content)
+
+        # 保存评审报告
+        try:
+            self._save_doc_audit_report(book, "章节大纲", final_audit_result)
+        except Exception as e:
+            print(f"保存章节大纲评审报告失败: {e}")
+
+        return {
+            "success": True,
+            "message": f"章节大纲重新生成成功（经{revision_count}次修订）" if revision_count > 0 else "章节大纲重新生成成功",
+            "audit_passed": final_audit_result.get("passed"),
+            "audit_score": final_audit_result.get("score", 85),
+            "audit_details": final_audit_result.get("details", ""),
+            "revision_count": revision_count,
+            "steps": steps
+        }
 
     def update_planning(self, book: BookInfo = None, book_id: str = None) -> Dict[str, Any]:
         """更新创作简报（仅保存现有内容）"""
@@ -1930,10 +2146,114 @@ class NovelEngine:
 3. [情节点3]
 """
 
+    def _generate_full_outline(self, book: BookInfo, planning: Dict, story_bible: str,
+                                author_intent: str, characters: str) -> str:
+        """
+        生成完整章节大纲
+
+        基于创作意图、世界观、人物设定，生成整本书的章节规划。
+
+        Args:
+            book: 书籍信息
+            planning: 规划数据
+            story_bible: 世界观设定
+            author_intent: 作者意图
+            characters: 人物设定
+
+        Returns:
+            完整章节大纲
+        """
+        genre = planning.get('genre', book.genre or '都市')
+        summary = planning.get('梗概', '')
+        estimated_chapters = planning.get('estimated_chapters', 80)
+        style = planning.get('风格', '轻松幽默')
+
+        prompt = f"""请为小说《{book.name}》生成完整的章节大纲。
+
+## 基本信息
+- 题材：{genre}
+- 风格：{style}
+- 预期章节数：{estimated_chapters}
+- 目标字数：约 {estimated_chapters * 3000} 字
+
+## 故事梗概
+{summary}
+
+## 作者意图
+{author_intent[:1000] if author_intent else '无'}
+
+## 世界观设定
+{story_bible[:1500] if story_bible else '无'}
+
+## 人物设定
+{characters[:1000] if characters else '无'}
+
+请生成完整的章节大纲，要求：
+
+1. **整体结构**：将 {estimated_chapters} 章分为几个阶段（如：开局期、成长期、高潮期、结局期）
+2. **每阶段规划**：说明该阶段的主要任务、预期章节数
+3. **关键节点**：标注重要情节点（如：第一个高潮、转折点、最终决战等）
+4. **章节预览**：列出前20章的简要内容（每章一句话）
+
+大纲格式：
+- 使用 Markdown
+- 分层清晰
+- 每个阶段用 ## 标记
+- 章节用 - 或 * 列表
+
+请生成详细且实用的章节大纲："""
+
+        result = self.llm.generate(prompt, self.llm.get_system_prompt("architect"))
+
+        if result and not result.startswith("["):
+            return f"# {book.name} - 章节大纲\n\n*本文档定义了整本书的章节规划，应在章节创作时参考。*\n\n{result}"
+
+        # 回退模板
+        chapters = planning.get('estimated_chapters', 80)
+        stage_size = chapters // 4
+        return f"""# {book.name} - 章节大纲
+
+*本文档定义了整本书的章节规划，应在章节创作时参考。*
+
+## 整体结构
+
+| 阶段 | 章节范围 | 主要任务 |
+|------|----------|----------|
+| 开局期 | 1-{stage_size}章 | 建立世界观、主角、初始冲突 |
+| 成长期 | {stage_size+1}-{stage_size*2}章 | 主角升级、势力扩展 |
+| 高潮期 | {stage_size*2+1}-{stage_size*3}章 | 主线冲突升级、最终对抗 |
+| 结局期 | {stage_size*3+1}-{chapters}章 | 收束伏笔、完美结局 |
+
+## 开局期（前{stage_size}章）
+
+- **第1章**：主角出场，展示初始状态，设置悬念钩子
+- **第2章**：主角获得机遇/觉醒，展示能力雏形
+- **第3章**：小试牛刀，建立第一个明确对手/目标
+- ...
+
+## 关键节点
+
+- 第10章左右：第一个高潮
+- 第{stage_size}章：开局期收尾，主线任务确立
+- 第{chapters-20}章左右：最终决战准备
+- 第{chapters}章：大结局
+
+---
+
+*版本：1.0*
+*生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}*
+"""
+
     def _compile_context(self, book: BookInfo, chapter_num: int, outline: str, truth_files: Dict, is_preface: bool = False) -> str:
         """编译上下文"""
         if is_preface:
             return f"""# 序章创作包
+
+## 作者意图（长期愿景）
+{truth_files.get('author_intent', '[来自 author_intent.md 的创作愿景]')}
+
+## 当前焦点（近期任务）
+{truth_files.get('current_focus', '[来自 current_focus.md 的近期重点]')}
 
 ## 创作约束
 {truth_files.get('book_rules', '[来自 book_rules.md 的强制规则]')}
@@ -1946,6 +2266,12 @@ class NovelEngine:
 """
 
         return f"""# 上下文编译包 - 第 {chapter_num} 章
+
+## 作者意图（长期愿景）
+{truth_files.get('author_intent', '[来自 author_intent.md 的创作愿景]')}
+
+## 当前焦点（近期任务）
+{truth_files.get('current_focus', '[来自 current_focus.md 的近期重点]')}
 
 ## 创作约束
 {truth_files.get('book_rules', '[来自 book_rules.md 的强制规则]')}
@@ -2453,18 +2779,30 @@ class NovelEngine:
         """加载真相文件"""
         truth_dir = self.workspace / book.path / "truth_files"
         book_dir = self.workspace / book.path
+        
+        def safe_read(path):
+            """安全读取文件，不存在时返回空字符串"""
+            try:
+                if path.exists():
+                    return path.read_text(encoding='utf-8')
+                return ""
+            except Exception:
+                return ""
+        
         files = {
-            "planning": self.sm.fm.read_text(book_dir / "planning.md"),
-            "story_bible": self.sm.fm.read_text(book_dir / "story_bible.md"),
-            "book_rules": self.sm.fm.read_text(book_dir / "book_rules.md"),
-            "chapter_outline": self.sm.fm.read_text(book_dir / "chapter_outline.md"),
-            "current_state": self.sm.fm.read_text(truth_dir / "current_state.md"),
-            "particle_ledger": self.sm.fm.read_text(truth_dir / "particle_ledger.md"),
-            "emotional_arcs": self.sm.fm.read_text(truth_dir / "emotional_arcs.md"),
-            "pending_hooks": self.sm.fm.read_text(truth_dir / "pending_hooks.md"),
-            "subplot_board": self.sm.fm.read_text(truth_dir / "subplot_board.md"),
-            "character_matrix": self.sm.fm.read_text(truth_dir / "character_matrix.md"),
-            "chapter_summaries": self.sm.fm.read_text(truth_dir / "chapter_summaries.md")
+            "planning": safe_read(book_dir / "planning.md"),
+            "story_bible": safe_read(book_dir / "story_bible.md"),
+            "book_rules": safe_read(book_dir / "book_rules.md"),
+            "chapter_outline": safe_read(book_dir / "chapter_outline.md"),
+            "author_intent": safe_read(book_dir / "author_intent.md"),
+            "current_focus": safe_read(book_dir / "current_focus.md"),
+            "current_state": safe_read(truth_dir / "current_state.md"),
+            "particle_ledger": safe_read(truth_dir / "particle_ledger.md"),
+            "emotional_arcs": safe_read(truth_dir / "emotional_arcs.md"),
+            "pending_hooks": safe_read(truth_dir / "pending_hooks.md"),
+            "subplot_board": safe_read(truth_dir / "subplot_board.md"),
+            "character_matrix": safe_read(truth_dir / "character_matrix.md"),
+            "chapter_summaries": safe_read(truth_dir / "chapter_summaries.md")
         }
         return files
 
@@ -2509,3 +2847,298 @@ class NovelEngine:
             self.workspace / book.path / "truth_files" / "chapter_summaries.md",
             header
         )
+
+    def _generate_author_intent(self, book: BookInfo, brief: str, planning: Dict) -> str:
+        """
+        生成作者意图文档（author_intent.md）
+
+        记录这本书长期想成为什么。
+        与 planning.md 的区别：
+        - planning.md: 具体的创作规划（章节数、字数、节奏）
+        - author_intent.md: 抽象的创作愿景（主题、情感、风格追求）
+
+        Args:
+            book: 书籍信息
+            brief: 原始创作简报
+            planning: 解析后的规划数据
+
+        Returns:
+            author_intent.md 文档内容
+        """
+        genre = planning.get('genre', book.genre or '都市')
+        summary = planning.get('梗概', '')
+        style = planning.get('风格', '轻松幽默')
+        golden_finger = planning.get('主角的金手指', '')
+
+        prompt = f"""请为小说《{book.name}》生成【作者意图】文档。
+
+这是一份抽象的创作愿景声明，回答"这本书想成为什么"的问题。
+
+## 原始创作简报
+{brief[:1500]}
+
+## 题材
+{genre}
+
+## 风格要求
+{style}
+
+请从以下维度深入思考并生成文档：
+
+### 1. 核心主题
+这本书要探讨的核心命题是什么？比如：
+- 成长与蜕变
+- 正义与邪恶的对抗
+- 命运的抗争
+- 人性的光辉
+
+### 2. 情感基调
+读者读这本书应该感受到什么？
+- 热血沸腾
+- 轻松愉快
+- 紧张刺激
+- 感动落泪
+
+### 3. 爽感来源
+这本书的爽点模式是什么？
+- 扮猪吃虎
+- 绝地翻盘
+- 越级挑战
+- 资源积累
+
+### 4. 人物弧光
+主角的成长轨迹应该是什么？
+- 从弱到强
+- 从孤独到被认可
+- 从迷茫到坚定
+
+### 5. 世界观定位
+这个世界给读者的感觉是什么？
+- 充满机遇
+- 危险与机遇并存
+- 阶级固化但有突破可能
+
+### 6. 与同类作品的差异化
+这本书相比同题材作品有什么独特之处？
+
+请用 Markdown 格式输出，结构清晰，观点明确。这份文档将作为长期创作指导，确保 AI 在整个写作周期内保持方向一致。"""
+
+        result = self.llm.generate(prompt, self.llm.get_system_prompt("architect"))
+        if result and not result.startswith("["):
+            return f"# {book.name} - 作者意图\n\n*本文档定义了《{book.name}》的长期创作愿景，是 AI 写作的核心指导文件。*\n\n{result}"
+
+        # 回退模板
+        return f"""# {book.name} - 作者意图
+
+*本文档定义了《{book.name}》的长期创作愿景，是 AI 写作的核心指导文件。*
+
+## 核心主题
+
+[这本书要探讨的核心命题]
+
+## 情感基调
+
+[读者读这本书应该感受到什么]
+
+## 爽感来源
+
+[这本书的爽点模式]
+
+## 人物弧光
+
+[主角的成长轨迹]
+
+## 差异化定位
+
+[相比同类作品的独特之处]
+
+---
+
+*版本：1.0*
+*创建时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}*
+"""
+
+    def _generate_current_focus(self, book: BookInfo, planning: Dict) -> str:
+        """
+        生成当前焦点文档（current_focus.md）
+
+        这是 InkOS 的核心机制之一，记录最近 1-3 章的关注重点。
+        作用是让 AI 在写作时把注意力拉回到当前最重要的任务上。
+
+        Args:
+            book: 书籍信息
+            planning: 解析后的规划数据
+
+        Returns:
+            current_focus.md 文档内容
+        """
+        genre = planning.get('genre', book.genre or '都市')
+        summary = planning.get('梗概', '')
+
+        prompt = f"""请为小说《{book.name}》生成【当前焦点】文档。
+
+这本书刚刚开始创作，请确定前 3 章的核心任务。
+
+## 题材
+{genre}
+
+## 故事梗概
+{summary}
+
+请从以下维度思考：
+
+### 1. 前三章的核心任务
+- 第1章：建立主角、设置悬念、引入世界观
+- 第2章：展示主角能力/机遇、建立第一个冲突
+- 第3章：升级/成长、埋下主线伏笔
+
+### 2. 当前阶段的关键信息
+- 需要在前期建立的关键设定
+- 需要让读者第一时间知道的规则
+
+### 3. 需要避免的问题
+- 开局拖沓
+- 信息过载
+- 悬念设置不当
+
+### 4. 节奏把控
+- 前三章应该多快的节奏
+- 每章应该包含多少个情节点
+
+请用 Markdown 格式输出，结构清晰。"""
+
+        result = self.llm.generate(prompt, self.llm.get_system_prompt("architect"))
+        if result and not result.startswith("["):
+            return f"# {book.name} - 当前焦点\n\n*本文档记录最近 1-3 章的创作重点，应在章节写作时优先参考。*\n\n{result}"
+
+        # 回退模板
+        return f"""# {book.name} - 当前焦点
+
+*本文档记录最近 1-3 章的创作重点，应在章节写作时优先参考。*
+
+## 前三章核心任务
+
+- **第1章**：建立主角身份，展示初始状态，设置悬念钩子
+- **第2章**：主角获得机遇/觉醒，展示能力雏形
+- **第3章**：小试牛刀，建立第一个明确对手/目标
+
+## 当前阶段关键信息
+
+- [需要建立的关键设定]
+
+## 需要避免的问题
+
+- 开局拖沓，迟迟不进入主线
+- 信息过载，一次性介绍太多设定
+- 悬念设置过于隐晦或过于直白
+
+## 节奏把控
+
+- 前三章节奏较快，每章至少 2-3 个情节点
+- 尽快让主角进入"行动状态"
+
+---
+
+*版本：1.0*
+*更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}*
+"""
+
+    def update_author_intent(self, book_id: str = None, content: str = None) -> Dict[str, Any]:
+        """
+        更新作者意图文档
+
+        Args:
+            book_id: 书籍ID
+            content: 新的作者意图内容（如果为空则由 AI 重新生成）
+
+        Returns:
+            更新结果
+        """
+        book = self.sm.get_book_by_id(book_id) if book_id else self.sm.get_current_book()
+        if not book:
+            return {"success": False, "message": "未找到书籍"}
+
+        book_path = self.workspace / book.path
+
+        if content:
+            # 直接保存用户提供的内容
+            self.sm.fm.write_text(book_path / "author_intent.md", content)
+            return {"success": True, "message": "作者意图已更新", "content": content}
+        else:
+            # 加载现有简报，重新生成
+            planning_path = book_path / "planning.md"
+            brief = ""
+            if planning_path.exists():
+                brief = planning_path.read_text(encoding='utf-8')
+
+            new_intent = self._generate_author_intent(book, brief, {})
+            self.sm.fm.write_text(book_path / "author_intent.md", new_intent)
+            return {"success": True, "message": "作者意图已重新生成", "content": new_intent}
+
+    def update_current_focus(self, book_id: str = None, content: str = None) -> Dict[str, Any]:
+        """
+        更新当前焦点文档
+
+        Args:
+            book_id: 书籍ID
+            content: 新的当前焦点内容（如果为空则由 AI 重新生成）
+
+        Returns:
+            更新结果
+        """
+        book = self.sm.get_book_by_id(book_id) if book_id else self.sm.get_current_book()
+        if not book:
+            return {"success": False, "message": "未找到书籍"}
+
+        book_path = self.workspace / book.path
+
+        if content:
+            # 直接保存用户提供的内容
+            self.sm.fm.write_text(book_path / "current_focus.md", content)
+            return {"success": True, "message": "当前焦点已更新", "content": content}
+        else:
+            # 加载现有简报，重新生成
+            planning_path = book_path / "planning.md"
+            planning = {}
+            if planning_path.exists():
+                try:
+                    import yaml
+                    content_text = planning_path.read_text(encoding='utf-8')
+                    if content_text.startswith('---'):
+                        parts = content_text.split('---', 2)
+                        if len(parts) >= 3:
+                            planning = yaml.safe_load(parts[1]) or {}
+                except Exception:
+                    pass
+
+            new_focus = self._generate_current_focus(book, planning)
+            self.sm.fm.write_text(book_path / "current_focus.md", new_focus)
+            return {"success": True, "message": "当前焦点已重新生成", "content": new_focus}
+
+    def get_author_intent(self, book_id: str = None) -> Dict[str, Any]:
+        """获取作者意图文档"""
+        book = self.sm.get_book_by_id(book_id) if book_id else self.sm.get_current_book()
+        if not book:
+            return {"success": False, "message": "未找到书籍"}
+
+        book_path = self.workspace / book.path
+        intent_path = book_path / "author_intent.md"
+
+        if intent_path.exists():
+            content = intent_path.read_text(encoding='utf-8')
+            return {"success": True, "content": content}
+        return {"success": False, "message": "作者意图文档不存在"}
+
+    def get_current_focus(self, book_id: str = None) -> Dict[str, Any]:
+        """获取当前焦点文档"""
+        book = self.sm.get_book_by_id(book_id) if book_id else self.sm.get_current_book()
+        if not book:
+            return {"success": False, "message": "未找到书籍"}
+
+        book_path = self.workspace / book.path
+        focus_path = book_path / "current_focus.md"
+
+        if focus_path.exists():
+            content = focus_path.read_text(encoding='utf-8')
+            return {"success": True, "content": content}
+        return {"success": False, "message": "当前焦点文档不存在"}

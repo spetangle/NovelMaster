@@ -362,6 +362,44 @@ async def get_book_rules():
     return truth_files
 
 
+# ============== 作者意图与当前焦点 ==============
+
+@router.get("/author-intent")
+async def get_author_intent():
+    """获取作者意图文档"""
+    result = engine.get_author_intent()
+    return result
+
+
+@router.get("/current-focus")
+async def get_current_focus():
+    """获取当前焦点文档"""
+    result = engine.get_current_focus()
+    return result
+
+
+class UpdateAuthorIntentRequest(BaseModel):
+    content: str = ""
+
+
+@router.put("/author-intent")
+async def update_author_intent(data: UpdateAuthorIntentRequest):
+    """更新作者意图文档"""
+    result = engine.update_author_intent(content=data.content if data.content else None)
+    return result
+
+
+class UpdateCurrentFocusRequest(BaseModel):
+    content: str = ""
+
+
+@router.put("/current-focus")
+async def update_current_focus(data: UpdateCurrentFocusRequest):
+    """更新当前焦点文档"""
+    result = engine.update_current_focus(content=data.content if data.content else None)
+    return result
+
+
 # ============== LLM配置 ==============
 
 @router.get("/llm/config")
@@ -512,16 +550,18 @@ async def get_book_detail(book_id: str):
     book = engine.get_book(book_id)
     if not book:
         raise HTTPException(status_code=404, detail="书籍不存在")
-    
+
     # 检查各文档是否存在
     book_path = engine.workspace / book.path
     docs_status = {
         'planning_exists': (book_path / "planning.md").exists(),
         'story_bible_exists': (book_path / "story_bible.md").exists(),
         'book_rules_exists': (book_path / "book_rules.md").exists(),
-        'chapter_outline_exists': (book_path / "chapter_outline.md").exists()
+        'chapter_outline_exists': (book_path / "chapter_outline.md").exists(),
+        'author_intent_exists': (book_path / "author_intent.md").exists(),
+        'current_focus_exists': (book_path / "current_focus.md").exists()
     }
-    
+
     book_data = book.to_dict() if hasattr(book, 'to_dict') else book
     return {
         "success": True,
@@ -535,22 +575,24 @@ async def get_book_doc(book_id: str, doc_key: str):
     book = engine.get_book(book_id)
     if not book:
         raise HTTPException(status_code=404, detail="书籍不存在")
-    
+
     doc_files = {
         'planning': 'planning.md',
         'story_bible': 'story_bible.md',
         'book_rules': 'book_rules.md',
-        'chapter_outline': 'chapter_outline.md'
+        'chapter_outline': 'chapter_outline.md',
+        'author_intent': 'author_intent.md',
+        'current_focus': 'current_focus.md'
     }
-    
+
     doc_file = doc_files.get(doc_key)
     if not doc_file:
         raise HTTPException(status_code=400, detail="未知文档类型")
-    
+
     doc_path = engine.workspace / book.path / doc_file
     if not doc_path.exists():
         return {"success": True, "content": "", "message": "文档不存在"}
-    
+
     try:
         content = doc_path.read_text(encoding='utf-8')
         return {"success": True, "content": content}
@@ -1117,26 +1159,41 @@ async def regenerate_doc(data: RegenerateDocRequest):
         'chapter_outline': '章节大纲'
     }
 
-    try:
-        result = None
-        if data.doc_key == 'story_bible':
-            result = engine.create_story_bible(book_id=data.book_id)
-        elif data.doc_key == 'book_rules':
-            result = engine.create_book_rules(book_id=data.book_id)
-        elif data.doc_key == 'chapter_outline':
-            result = engine.create_chapter_outline(book_id=data.book_id)
-
-        if result and result.get('success'):
-            response = {"success": True, "message": f"{doc_names.get(data.doc_key)}生成成功"}
-            # 添加评审结果（如果有）
-            if 'audit_passed' in result:
-                response['audit_passed'] = result['audit_passed']
-                response['audit_details'] = result.get('audit_details', '')
-            return response
-        else:
-            return {"success": False, "message": result.get('message', '生成失败')}
-    except Exception as e:
-        return {"success": False, "message": f"生成失败: {str(e)}"}
+    doc_name = doc_names.get(data.doc_key, data.doc_key)
+    
+    # 创建后台任务
+    task = task_manager.create_task(f"重新生成{doc_name}", book_id=data.book_id, task_type="doc_regenerate")
+    
+    def run_regenerate_task():
+        """后台执行设定文档重新生成"""
+        try:
+            task_manager.update_task(task.id, status=TaskStatus.RUNNING, progress=10, 
+                                    message=f"开始重新生成{doc_name}...", step="准备中")
+            
+            result = None
+            if data.doc_key == 'story_bible':
+                result = engine.create_story_bible(book_id=data.book_id)
+            elif data.doc_key == 'book_rules':
+                result = engine.create_book_rules(book_id=data.book_id)
+            elif data.doc_key == 'chapter_outline':
+                result = engine.create_chapter_outline(book_id=data.book_id)
+            
+            if result and result.get('success'):
+                task_manager.update_task(task.id, status=TaskStatus.SUCCESS, progress=100,
+                                        message=result.get('message', f'{doc_name}生成成功'),
+                                        result=result)
+            else:
+                task_manager.update_task(task.id, status=TaskStatus.FAILED,
+                                        message=result.get('message', '生成失败') if result else '生成失败')
+        except Exception as e:
+            task_manager.update_task(task.id, status=TaskStatus.FAILED, 
+                                    message=f"生成失败: {str(e)}", error=str(e))
+    
+    # 启动后台线程
+    thread = threading.Thread(target=run_regenerate_task, daemon=True)
+    thread.start()
+    
+    return {"success": True, "task_id": task.id, "message": f"正在重新生成{doc_name}..."}
 
 
 class SavePlanningRequest(BaseModel):
@@ -1194,6 +1251,35 @@ async def save_planning(data: SavePlanningRequest):
             "message": "已保存（AI解析失败）",
             "error": str(e)
         }
+
+
+# ============== 文档评审报告 ==============
+
+class DocAuditRequest(BaseModel):
+    book_id: str
+    doc_key: str
+
+
+@router.get("/docs/{book_id}/{doc_key}/audit")
+async def get_doc_audit_report(book_id: str, doc_key: str):
+    """获取文档的最新评审报告"""
+    book = engine.get_book(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="书籍不存在")
+
+    # 文档名称映射
+    doc_names = {
+        'story_bible': '世界观设定',
+        'book_rules': '书籍规则',
+        'chapter_outline': '章节大纲'
+    }
+
+    doc_name = doc_names.get(doc_key)
+    if not doc_name:
+        return {"found": False, "message": "不支持评审此文档"}
+
+    result = engine.get_latest_doc_audit_report(book, doc_name)
+    return result
 
 
 # ============== Trash 文件夹管理 ==============
