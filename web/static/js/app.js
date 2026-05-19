@@ -176,6 +176,7 @@ async function loadBookManagerList() {
                 <td class="latest-chapter" title="${escapeHtml(latestChapter)}">${escapeHtml(latestChapter)}</td>
                 <td class="book-manager-actions-cell">
                     <button class="btn btn-sm btn-primary" onclick="selectBookFromManager('${book.id}')">打开</button>
+                    <button class="btn btn-sm btn-secondary" onclick="renameBookFromManager('${book.id}', '${escapeHtml(book.name)}')">改名</button>
                     <button class="btn btn-sm btn-danger" onclick="deleteBookFromManager('${book.id}', '${escapeHtml(book.name)}')">删除</button>
                 </td>
             </tr>
@@ -205,6 +206,31 @@ async function deleteBookFromManager(bookId, bookName) {
         await loadBookManagerList();
     } else {
         addSystemMessage(`❌ 删除失败: ${res.message}`);
+    }
+}
+
+// 从书籍管理页改名书籍
+async function renameBookFromManager(bookId, bookName) {
+    const newName = prompt('请输入新书名：', bookName);
+    if (!newName || newName.trim() === bookName.trim()) {
+        return;
+    }
+    
+    if (!newName.trim()) {
+        addSystemMessage('❌ 书名不能为空');
+        return;
+    }
+    
+    const res = await api(`/api/books/${bookId}/rename`, {
+        method: 'PUT',
+        body: { new_name: newName.trim() }
+    });
+    
+    if (res.success) {
+        addSystemMessage(`✅ 书籍已改名为《${res.new_name}》`);
+        await loadBookManagerList();
+    } else {
+        addSystemMessage(`❌ 改名失败: ${res.detail || res.message}`);
     }
 }
 
@@ -248,15 +274,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }, AUTO_SAVE_INTERVAL);
 
-    // 绑定书籍列表点击事件（事件委托）
-    document.getElementById('book-list')?.addEventListener('click', async (e) => {
-        const bookItem = e.target.closest('.book-item[data-book-id]');
-        if (bookItem) {
-            const bookId = bookItem.dataset.bookId;
-            await selectBook(bookId);
-        }
-    });
-
     // 绑定章节列表点击事件（事件委托）
     document.getElementById('chapter-list')?.addEventListener('click', async (e) => {
         const chapterItem = e.target.closest('.chapter-item[data-chapter-id]');
@@ -285,6 +302,12 @@ async function api(url, options = {}) {
         const encodedUrl = url.replace(/\/books\/([^/]+)\//g, (match, id) => {
             return `/books/${encodeURIComponent(id)}/`;
         });
+        
+        // 自动序列化 body 对象为 JSON
+        if (options.body && typeof options.body === 'object') {
+            options.body = JSON.stringify(options.body);
+        }
+        
         const res = await fetch(encodedUrl, {
             headers: { 'Content-Type': 'application/json' },
             ...options
@@ -326,23 +349,25 @@ function hideWelcomeView() {
 }
 
 // ==================== 书籍管理 ====================
-async function loadBookList() {
-    const res = await api('/api/books');
-    const bookList = document.getElementById('book-list');
+
+// 更新当前书籍显示
+function updateCurrentBookDisplay() {
+    const display = document.getElementById('current-book-display');
+    const nameEl = document.getElementById('current-book-name');
     
-    if (!bookList) return;
+    if (!display || !nameEl) return;
     
-    if (res.success && res.books && res.books.length > 0) {
-        bookList.innerHTML = res.books.map(book => `
-            <div class="book-item ${currentBook && currentBook.id === book.id ? 'active' : ''}"
-                 data-book-id="${book.id}">
-                <span>📚</span>
-                <span class="book-name">${escapeHtml(book.name)}</span>
-            </div>
-        `).join('');
+    if (currentBook) {
+        nameEl.textContent = currentBook.name;
     } else {
-        bookList.innerHTML = '<div class="text-muted" style="font-size: 0.8rem; color: var(--text-secondary);">暂无书籍</div>';
+        nameEl.textContent = '未选择';
     }
+}
+
+// 保留 loadBookList 以兼容其他功能
+async function loadBookList() {
+    // 不再需要加载书籍列表，更新当前书籍显示即可
+    updateCurrentBookDisplay();
 }
 
 async function selectBook(bookId, silent = false) {
@@ -363,6 +388,9 @@ async function selectBook(bookId, silent = false) {
         // 加载最新的聊天记录
         await loadLatestChatLog();
         
+        // 检查是否有正在进行的创建任务
+        await checkAndResumeCreatingTask(bookId);
+        
         // 显示写作页面
         showWritingPage();
 
@@ -374,6 +402,28 @@ async function selectBook(bookId, silent = false) {
         if (!silent) {
             addSystemMessage(`加载书籍失败: ${res.message || '未知错误'}`);
         }
+    }
+}
+
+// 检查并恢复正在进行的创建任务
+async function checkAndResumeCreatingTask(bookId) {
+    try {
+        const res = await api('/api/tasks');
+        if (res.success && res.tasks) {
+            // 查找与当前书籍相关的创建任务
+            const createTask = res.tasks.find(task => 
+                task.type === 'create_book' && 
+                task.book_id === bookId &&
+                task.status === 'running'
+            );
+            
+            if (createTask) {
+                addSystemMessage(`📚 检测到书籍仍在创建中，正在恢复进度...`);
+                startTaskPolling(createTask.task_id);
+            }
+        }
+    } catch (e) {
+        console.error('检查创建任务失败:', e);
     }
 }
 
@@ -734,34 +784,10 @@ async function showGuidance(context, currentDocKey = null) {
         
         if (hasChapters) {
             // 有章节，显示续写/评审引导
-            addAIMessage(`📚 **创作进行中！**
-
-您的书籍《${currentBook.name}》已完成基础设定。
-
-**您可以：**
-- ✍️ **续写下一章** - 在对话框输入"续写"
-- 🔍 **评审章节** - 输入"评审"检查章节质量
-- 📖 **查看章节** - 在左侧章节列表查看
-- 🔄 **修订章节** - 对不满意的部分进行修改
-
-直接在对话框输入您的需求即可！`);
+            addAIMessage(`📚 书籍《${currentBook.name}》已就绪，输入"续写"开始创作下一章`);
         } else {
             // 没有章节，显示新书引导
-            addAIMessage(`🎉 **创作准备已完成！**
-
-您的书籍已经完成了所有基础设定：
-- 📋 创作简报
-- 🌍 世界观设定  
-- 📜 书籍规则
-- 📑 章节大纲
-
-**接下来您可以：**
-- ✍️ 开始创作第一章
-- 📖 查看已生成的章节大纲
-- 🔄 重新生成任意设定文件
-- 📊 调整自动续写参数
-
-直接在对话框输入您的需求即可！`);
+            addAIMessage(`🎉 基础设定已完成，输入"续写"开始创作正文`);
         }
         return;
     }
@@ -773,112 +799,23 @@ async function showGuidance(context, currentDocKey = null) {
 
     if (context === 'task_completed') {
         if (nextStep.key === 'story_bible') {
-            guidance = `📋 **创作简报已完成！**
-
-现在可以进入下一步：**世界观设定**
-
-您可以：
-- 在对话框输入 "生成世界观" 或 "创建设定"
-- 或点击左侧工具栏的【世界观】按钮
-
-世界观将帮您构建故事的：
-- 主要势力与组织
-- 地理环境与空间
-- 力量体系与规则
-- 历史背景与关键事件`;
+            guidance = `🌍 输入"生成世界观"创建故事背景`;
         } else if (nextStep.key === 'book_rules') {
-            guidance = `🌍 **世界观设定已完成！**
-
-现在可以进入下一步：**书籍规则**
-
-您可以：
-- 在对话框输入 "生成规则" 或 "创建书籍规则"
-- 或点击左侧工具栏的【规则】按钮
-
-书籍规则将定义：
-- 叙述风格与节奏
-- 角色刻画方式
-- 对话与内心独白的比例
-- 章节结构模板`;
+            guidance = `📖 输入"生成规则"创建创作规则`;
         } else if (nextStep.key === 'chapter_outline') {
-            guidance = `📜 **书籍规则已完成！**
-
-现在可以进入下一步：**章节大纲**
-
-您可以：
-- 在对话框输入 "生成大纲" 或 "创建章节大纲"
-- 或点击左侧工具栏的【大纲】按钮
-
-章节大纲将规划：
-- 章节数量与节奏
-- 各章节核心事件
-- 伏笔与高潮安排
-- 支线与主线关系`;
+            guidance = `📜 输入"生成大纲"创建章节大纲`;
         } else if (nextStep.key === 'write') {
-            guidance = `📑 **章节大纲已完成！**
-
-🎉 **准备工作全部就绪！**
-
-现在可以开始创作正文了：
-
-**创作方式：**
-1. 在对话框输入 "续写" 或 "创作序章"
-2. 点击【写作工具】标签页，点击续写按钮（系统会自动创作序章）
-3. 设置自动续写参数，批量创作多章
-
-**提示：**
-- 建议先创作序章（序章=第0章），介绍世界观和设定
-- 创作完成后可进行评审和修订
-- 可以设置自动评审，自动修订不达标的章节
-
-准备好了就开始您的创作之旅吧！ ✍️`;
+            guidance = `✍️ 输入"续写"开始创作正文`;
         }
     } else if (context === 'chapter_completed') {
-        guidance = `✍️ **章节创作完成！**
-
-**您可以：**
-1. 📖 **查看章节** - 在左侧章节列表点击查看
-2. 🔍 **评审章节** - 检查质量评分
-3. 🔧 **修订章节** - 对不满意的部分进行修改
-4. ▶️ **续写下一章** - 继续创作
-
-**快捷指令（在对话框输入）：**
-- "续写" - 创作下一章
-- "评审" - 评审当前章节
-- "修订" - 修订当前章节
-
-建议创作序章（第0章）作为开篇，介绍世界观和主角背景！`;
+        guidance = `✍️ 章节创作完成！输入"续写"继续，输入"评审"检查质量`;
     } else if (context === 'doc_viewed') {
-        // 查看了某个文档后的引导 - 优先使用传入的文档键
-        let currentDoc = null;
-        if (currentDocKey) {
-            currentDoc = progress.find(p => p.key === currentDocKey);
-        }
-        if (!currentDoc) {
-            currentDoc = progress.find(p => p.completed && p.key !== 'write');
-        }
-        const currentDocName = currentDoc ? currentDoc.name : '';
-        
+        // 查看了某个文档后的引导
         if (!nextStep) {
             // 所有步骤都完成了
-            guidance = `🎉 **所有设定已完成！**
-
-您已经完成了：${progress.filter(p => p.completed).map(p => `${p.icon}${p.name}`).join('、')}
-
-**现在可以开始正文创作了！**
-在对话框输入 "创作第一章" 开始您的创作之旅！ ✍️`;
+            guidance = `🎉 全部设定完成，输入"续写"开始正文创作`;
         } else {
-            guidance = `📖 **${currentDocName || '文档'}已查看**
-
-**当前进度：**
-${progress.map(p => {
-    const check = p.completed ? '✓' : '○';
-    const highlight = !p.completed && p.key === nextStep.key ? ' **→' : '';
-    return `${check} ${p.icon} ${p.name}${highlight}`;
-}).join('\n')}
-
-**下一步：${nextStep.icon} ${nextStep.name}**
-${nextStep.key === 'write' ? '可以开始正文创作了！' : '继续生成下一步设定'}`;
+            guidance = `✅ 继续输入"${nextStep.key === 'write' ? '续写' : '继续'}"进行下一步`;
         }
     }
 
@@ -988,6 +925,70 @@ function displayChapterBrief(brief) {
     briefDetail += `\n---\n💡 输入"续写"继续创作下一章`;
 
     addAIMessage(briefDetail);
+}
+
+// 显示完整评审报告
+function displayAuditReport(reportContent) {
+    if (!reportContent) return;
+
+    // 将markdown格式的报告转换为可显示的内容
+    let report = `\n📊 **章节评审报告**\n`;
+    report += `━━━━━━━━━━━━━━━━━━━━\n`;
+
+    // 简化展示，只显示关键信息
+    const lines = reportContent.split('\n');
+    let skipSection = false;
+    let showCoreIssues = false;
+
+    for (const line of lines) {
+        // 跳过标题行
+        if (line.startsWith('# ')) continue;
+
+        // 标记核心漏洞部分
+        if (line.includes('核心漏洞')) {
+            showCoreIssues = true;
+            report += `\n🔴 **核心漏洞**：\n`;
+            continue;
+        }
+
+        // 跳过问题列表标题
+        if (line.includes('问题列表') || line.includes('质量指标')) continue;
+
+        // 处理核心漏洞
+        if (showCoreIssues) {
+            if (line.trim().startsWith('-') || (line.includes('[') && line.includes(']'))) {
+                report += `   ${line.trim()}\n`;
+            } else if (line.trim() === '' || line.trim().startsWith('##') || line.trim().startsWith('无')) {
+                showCoreIssues = false;
+            }
+            continue;
+        }
+
+        // 处理评分概览表格行
+        if (line.includes('|')) {
+            if (line.includes('综合评分') || line.includes('决策')) {
+                const parts = line.split('|').filter(p => p.trim());
+                if (parts.length >= 2) {
+                    const label = parts[0].replace(/\*\*/g, '').trim();
+                    const value = parts[1].replace(/\*\*/g, '').trim();
+                    report += `• ${label}：${value}\n`;
+                }
+            }
+            continue;
+        }
+
+        // 处理问题项
+        if (line.match(/^\d+\./) || line.includes('🔴') || line.includes('🟡') || line.includes('🟢')) {
+            report += `${line.trim()}\n`;
+        }
+
+        // 处理修订建议
+        if (line.includes('修订建议')) {
+            report += `\n💡 ${line.replace(/^.*修订建议/, '修订建议：').trim()}\n`;
+        }
+    }
+
+    addAIMessage(report);
 }
 
 // 显示黄金三章评审结果
@@ -1873,49 +1874,6 @@ async function executeWrite(action) {
     }
 }
 
-async function startAutoWrite() {
-    if (!currentBook) {
-        addSystemMessage('请先选择或创建一本书');
-        return;
-    }
-    
-    const startChapter = parseInt(document.getElementById('auto-start-chapter').value) || 1;
-    const endChapter = parseInt(document.getElementById('auto-end-chapter').value) || 5;
-    const autoReview = document.getElementById('auto-review').checked;
-    const autoRevise = document.getElementById('auto-revise').checked;
-    const reviewScore = parseInt(document.getElementById('auto-review-score').value) || 75;
-    
-    // 增加确认
-    const options = [];
-    if (autoReview) options.push('评审');
-    if (autoRevise) options.push('修订');
-    const optionText = options.length > 0 ? `（含${options.join('、')}）` : '';
-    
-    if (!confirm(`确定要自动续写第${startChapter}-${endChapter}章吗？${optionText}`)) {
-        return;
-    }
-    
-    addSystemMessage(`🚀 开始自动续写任务（第${startChapter}-${endChapter}章）`);
-    
-    const res = await api('/api/write/auto', {
-        method: 'POST',
-        body: JSON.stringify({
-            book_id: currentBook.id,
-            start_chapter: startChapter,
-            end_chapter: endChapter,
-            auto_review: autoReview,
-            auto_revise: autoRevise,
-            review_score: reviewScore
-        })
-    });
-    
-    if (res.success) {
-        addSystemMessage('✅ 自动续写任务已启动，请查看任务进度');
-    } else {
-        addSystemMessage(`❌ 启动失败: ${res.message}`);
-    }
-}
-
 // ==================== 章节列表 ====================
 async function loadChapterList() {
     if (!currentBook) {
@@ -2517,6 +2475,11 @@ async function pollTaskStatus(taskId) {
 
                     addAIMessage(auditDetail);
 
+                    // 显示完整评审报告（评审不通过时展示，让用户了解问题）
+                    if (!passed && task.result.audit_report) {
+                        displayAuditReport(task.result.audit_report);
+                    }
+
                     // 显示章节简报（评审通过后）
                     if (passed && task.result.chapter_brief) {
                         displayChapterBrief(task.result.chapter_brief);
@@ -2643,7 +2606,7 @@ async function terminateAllTasks() {
 function startTaskPolling(taskId) {
     stopTaskPolling();
     currentTaskId = taskId;
-    taskPollInterval = setInterval(() => pollTaskStatus(taskId), 2000);
+    taskPollInterval = setInterval(() => pollTaskStatus(taskId), 5000);
     addSystemMessage(`🔄 任务已启动，ID: ${taskId}`);
 }
 
@@ -2793,7 +2756,7 @@ async function createNewBook() {
         // 创建书籍（异步执行工作流）
         const res = await api('/api/books', {
             method: 'POST',
-            body: JSON.stringify({ brief })
+            body: { brief }
         });
         
         if (res.success) {
@@ -2831,20 +2794,18 @@ async function startAutoWrite() {
         return;
     }
 
-    const startChapter = parseInt(document.getElementById('auto-start-chapter').value) || 1;
-    const endChapter = parseInt(document.getElementById('auto-end-chapter').value) || 5;
+    const chapterCount = parseInt(document.getElementById('auto-chapter-count').value) || 5;
     const autoReview = document.getElementById('auto-review').checked;
     const autoRevise = document.getElementById('auto-revise').checked;
     const reviewScore = parseInt(document.getElementById('auto-review-score').value) || 75;
 
-    addSystemMessage(`🚀 开始自动续写任务（第${startChapter}-${endChapter}章）`);
+    addSystemMessage(`🚀 开始自动续写任务（连续${chapterCount}章）`);
 
     const res = await api('/api/write/auto', {
         method: 'POST',
         body: JSON.stringify({
             book_id: currentBook.id,
-            start_chapter: startChapter,
-            end_chapter: endChapter,
+            chapter_count: chapterCount,
             auto_review: autoReview,
             auto_revise: autoRevise,
             review_score: reviewScore
@@ -3478,9 +3439,26 @@ async function regenerateDocFile(key) {
 
             if (res.success) {
                 addSystemMessage(`✅ "${cfg.name}"重新生成完成`);
+
+                // 显示评审结果（世界观和规则）
+                if (res.audit_passed !== undefined) {
+                    if (res.audit_passed) {
+                        addSystemMessage(`📋 评审结果：✅ 通过`);
+                    } else {
+                        addSystemMessage(`📋 评审结果：⚠️ 需修订\n${res.audit_details || ''}`);
+                    }
+                }
+
                 // 刷新列表
                 if (document.getElementById('tab-doc-files').style.display !== 'none') {
                     await loadDocFilesList();
+                }
+            } else if (res.need_input) {
+                // 需要用户输入，显示输入弹窗
+                if (key === 'planning') {
+                    showPlanningModal();
+                } else {
+                    addSystemMessage(`⚠️ ${res.message}`);
                 }
             } else {
                 addSystemMessage(`❌ 重新生成失败: ${res.message}`);

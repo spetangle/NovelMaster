@@ -35,6 +35,8 @@ class Task:
     created_at: float = field(default_factory=time.time)
     completed_at: Optional[float] = None
     steps: list = field(default_factory=list)
+    book_id: str = ""  # 关联的书籍ID
+    task_type: str = ""  # 任务类型：create_book, write, auto_write 等
     
     def to_dict(self) -> dict:
         return {
@@ -48,7 +50,9 @@ class Task:
             "step": self.step,
             "created_at": self.created_at,
             "completed_at": self.completed_at,
-            "steps": self.steps
+            "steps": self.steps,
+            "book_id": self.book_id,
+            "type": self.task_type
         }
 
 
@@ -100,10 +104,10 @@ class TaskManager:
                 if key.startswith(f"{book_id}:")
             ]
     
-    def create_task(self, name: str) -> Task:
+    def create_task(self, name: str, book_id: str = "", task_type: str = "") -> Task:
         """创建新任务"""
         task_id = f"task_{uuid.uuid4().hex[:8]}"
-        task = Task(id=task_id, name=name)
+        task = Task(id=task_id, name=name, book_id=book_id, task_type=task_type)
         with self._lock:
             self._tasks[task_id] = task
             self._cancel_events[task_id] = Event()

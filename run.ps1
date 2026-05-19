@@ -26,33 +26,31 @@ foreach ($conn in $connections) {
 }
 Write-Host "[OK] Port released"
 
-# Check Python
-Write-Host "[*] Checking Python..."
-$python = Get-Command python -ErrorAction SilentlyContinue
-if (-not $python) {
-    $python = Get-Command python3 -ErrorAction SilentlyContinue
+# Check and create virtual environment
+Write-Host "[*] Checking virtual environment..."
+if (-not (Test-Path "$VENV\Scripts\python.exe")) {
+    Write-Host "[*] Virtual environment not found, creating..."
+    if (Test-Path $VENV) {
+        Remove-Item -Recurse -Force $VENV
+    }
+    python -m venv $VENV
+    if (-not (Test-Path "$VENV\Scripts\python.exe")) {
+        Write-Host "[ERROR] Failed to create virtual environment"
+        Read-Host "Press Enter to exit"
+        exit 1
+    }
+    Write-Host "[OK] Virtual environment created"
 }
-if (-not $python) {
-    Write-Host "[ERROR] Python not found. Please install Python 3.8+"
-    Read-Host "Press Enter to exit"
-    exit 1
-}
-Write-Host "[OK] Found Python"
-
-# Check virtual environment
-if (Test-Path "$VENV\Scripts\python.exe") {
-    Write-Host "[*] Using virtual environment: $VENV"
-    $PYTHON = "$VENV\Scripts\python.exe"
-} else {
-    Write-Host "[*] Using system Python"
-    $PYTHON = $python.Source
-}
+Write-Host "[*] Using virtual environment: $VENV"
+$PYTHON = "$VENV\Scripts\python.exe"
+$PIP = "$VENV\Scripts\pip.exe"
 
 # Install dependencies
 Write-Host ""
 Write-Host "[*] Checking dependencies..."
 if (Test-Path "requirements.txt") {
-    & pip install -r requirements.txt --quiet 2>$null
+    & $PIP install --upgrade pip --quiet 2>$null
+    & $PIP install -r requirements.txt --quiet 2>$null
     Write-Host "[OK] Dependencies installed"
 }
 

@@ -76,11 +76,11 @@
                 <!-- 左侧边栏 - 导航 -->
                 <aside class="sidebar" id="sidebar">
                     <div class="sidebar-content">
-                        <!-- 书籍选择 -->
-                        <div class="sidebar-section">
-                            <div class="sidebar-section-header">书籍</div>
-                            <div class="book-list" id="book-list">
-                                <!-- 动态加载书籍列表 -->
+                        <!-- 当前书籍 -->
+                        <div class="sidebar-section" id="current-book-section">
+                            <div class="sidebar-section-header">当前书籍</div>
+                            <div class="current-book-display" id="current-book-display">
+                                <span class="current-book-name" id="current-book-name">未选择</span>
                             </div>
                         </div>
 
@@ -170,9 +170,8 @@
                             </div>
                             <div class="auto-write-row">
                                 <span class="auto-label">自动续写:</span>
-                                <input type="number" id="auto-start-chapter" value="1" min="1" class="input-num">
-                                <span>~</span>
-                                <input type="number" id="auto-end-chapter" value="5" min="1" class="input-num">
+                                <input type="number" id="auto-chapter-count" value="5" min="1" max="20" class="input-num">
+                                <span>章</span>
                                 <label class="checkbox-inline"><input type="checkbox" id="auto-review" checked> 评审</label>
                                 <label class="checkbox-inline"><input type="checkbox" id="auto-revise" checked> 修订</label>
                                 <button class="btn btn-sm btn-primary" onclick="startAutoWrite()">🚀 开始</button>

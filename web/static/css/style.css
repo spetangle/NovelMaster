@@ -151,6 +151,21 @@ body {
     margin-bottom: 0.5rem;
 }
 
+/* 当前书籍显示 */
+.current-book-display {
+    padding: 0.75rem;
+    background: var(--primary);
+    color: white;
+    border-radius: 0.5rem;
+    text-align: center;
+}
+
+.current-book-name {
+    font-weight: 500;
+    font-size: 0.95rem;
+}
+
+/* 旧样式保留（可能被其他地方引用） */
 .book-list {
     display: flex;
     flex-direction: column;

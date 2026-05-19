@@ -72,21 +72,36 @@ async def create_book(data: CreateBookRequest):
         temp_name = name_match.group(1).strip()
     
     book_name = temp_name if temp_name else "新书"
+    book_id = engine._generate_book_id()
     
     # 创建任务并异步执行工作流
-    task = task_manager.create_task(f"创建新书 {book_name}")
+    task = task_manager.create_task(f"创建新书 {book_name}", book_id=book_id, task_type="create_book")
     
     def run():
         try:
-            # 直接使用 create_book_workflow（完整处理书籍创建）
-            result = engine.create_book_workflow(data.brief)
+            # 更新状态为运行中
+            task_manager.update_task(task.id, status=TaskStatus.RUNNING, progress=0, message="开始创建...")
+            
+            # 使用带进度回调的工作流
+            def progress_callback(step, progress, message):
+                task_manager.update_task(
+                    task.id,
+                    step=step,
+                    progress=progress,
+                    message=message
+                )
+            
+            # 执行带进度的创建流程（内部会创建书籍记录）
+            result = engine.create_book_workflow_with_progress(
+                data.brief, book_id, progress_callback
+            )
             
             if result.get('success'):
-                task_manager.update_task(task.id, status=TaskStatus.SUCCESS, 
+                task_manager.update_task(task.id, status=TaskStatus.SUCCESS,
                     progress=100, message="创建完成", result=result)
             else:
-                task_manager.update_task(task.id, status=TaskStatus.FAILED, 
-                    message=f"工作流失败: {result.get('message', '')}")
+                task_manager.update_task(task.id, status=TaskStatus.FAILED,
+                    message=f"创建失败: {result.get('message', '')}")
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -95,8 +110,6 @@ async def create_book(data: CreateBookRequest):
     import threading
     threading.Thread(target=run, daemon=True).start()
     
-    # 先返回临时信息
-    book_id = engine._generate_book_id(temp_name or "book")
     return {
         "success": True,
         "task_id": task.id,
@@ -141,6 +154,23 @@ async def delete_book(book_id: str):
         return {"success": True, "message": f"书籍已删除"}
     else:
         raise HTTPException(status_code=400, detail=result.get('message', '删除失败'))
+
+
+class RenameBookRequest(BaseModel):
+    new_name: str
+
+
+@router.put("/books/{book_id}/rename")
+async def rename_book(book_id: str, data: RenameBookRequest):
+    """重命名书籍"""
+    if not data.new_name:
+        raise HTTPException(status_code=400, detail="请提供新书名")
+    
+    result = engine.rename_book(book_id, data.new_name)
+    if result.get('success'):
+        return {"success": True, "message": result.get('message', '书籍已重命名'), "new_name": result.get('new_name')}
+    else:
+        raise HTTPException(status_code=400, detail=result.get('message', '重命名失败'))
 
 
 @router.get("/books/current")
@@ -801,7 +831,7 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
                 )
                 
             elif data.action == "review":
-                task_manager.update_task(task.id, status=TaskStatus.RUNNING, progress=10, 
+                task_manager.update_task(task.id, status=TaskStatus.RUNNING, progress=10,
                                         message=f"正在获取{chapter_title}内容...", step="获取内容")
 
                 # 检查是否已取消
@@ -809,24 +839,36 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
                     task_manager.update_task(task.id, status=TaskStatus.TERMINATED, message="任务已取消")
                     task_manager.unlock_chapter(data.book_id, chapter_num)
                     return
-                
+
                 # 评审：获取章节内容并审核
                 chapter_info = engine.get_chapter_content(data.book_id, chapter_num)
                 content = chapter_info.get('content', '') if chapter_info.get('success') else ''
-                
-                task_manager.update_task(task.id, progress=40, 
+
+                task_manager.update_task(task.id, progress=40,
                                         message=f"正在分析{chapter_title}内容...", step="分析内容")
-                
+
                 truth_files = engine._load_truth_files(book)
-                
-                task_manager.update_task(task.id, progress=70, 
+
+                task_manager.update_task(task.id, progress=70,
                                         message=f"正在对{chapter_title}进行评分...", step="质量评分")
-                
+
                 audit_result = engine._audit_chapter(book, chapter_num, content, truth_files)
+
+                # 保存评审报告
+                audit_report_path = ""
+                audit_report_content = ""
+                try:
+                    audit_report_path = engine.save_audit_report(book, chapter_num, content, audit_result)
+                    audit_report_content = engine._generate_audit_report(book, chapter_num, content, audit_result)
+                except Exception as e:
+                    print(f"保存评审报告失败: {e}")
+
                 result = {
                     "success": True,
                     "message": f"{chapter_title}评审完成",
-                    "audit_result": audit_result.to_dict()
+                    "audit_result": audit_result.to_dict(),
+                    "audit_report": audit_report_content,  # 用于前端展示
+                    "audit_report_path": audit_report_path
                 }
 
                 # 记录评审日志
@@ -927,8 +969,7 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
 
 class AutoWriteRequest(BaseModel):
     book_id: str = ""
-    start_chapter: int = 1
-    end_chapter: int = 5
+    chapter_count: int = 5  # 要生成的章节数量
     auto_review: bool = True
     auto_revise: bool = True
     review_score: int = 75
@@ -940,15 +981,28 @@ async def auto_write(data: AutoWriteRequest):
     if not data.book_id:
         raise HTTPException(status_code=400, detail="缺少书籍ID")
     
+    # 计算起始章节（当前已完成的最后一章+1）
+    book = engine.get_book(data.book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="书籍不存在")
+    
+    # 获取当前已完成的章节数
+    chapters_dir = engine.workspace / book.path / "chapters"
+    existing_chapters = []
+    if chapters_dir.exists():
+        existing_chapters = [int(f.stem.replace('ch', '')) for f in chapters_dir.glob("ch*.md") if f.stem.startswith('ch')]
+    start_chapter = max(existing_chapters) + 1 if existing_chapters else 1
+    end_chapter = start_chapter + data.chapter_count - 1
+    
     # 创建任务
-    task = task_manager.create_task(f"自动续写 {data.book_id} 第{data.start_chapter}-{data.end_chapter}章")
+    task = task_manager.create_task(f"自动续写 {data.book_id} 第{start_chapter}-{end_chapter}章")
     
     # 后台运行
     def run():
         try:
             results = []
-            total = data.end_chapter - data.start_chapter + 1
-            for idx, i in enumerate(range(data.start_chapter, data.end_chapter + 1)):
+            total = data.chapter_count
+            for idx, i in enumerate(range(start_chapter, end_chapter + 1)):
                 # 检查是否已取消
                 if task_manager.is_cancelled(task.id):
                     task_manager.update_task(task.id, status=TaskStatus.TERMINATED,
@@ -1073,7 +1127,12 @@ async def regenerate_doc(data: RegenerateDocRequest):
             result = engine.create_chapter_outline(book_id=data.book_id)
 
         if result and result.get('success'):
-            return {"success": True, "message": f"{doc_names.get(data.doc_key)}生成成功"}
+            response = {"success": True, "message": f"{doc_names.get(data.doc_key)}生成成功"}
+            # 添加评审结果（如果有）
+            if 'audit_passed' in result:
+                response['audit_passed'] = result['audit_passed']
+                response['audit_details'] = result.get('audit_details', '')
+            return response
         else:
             return {"success": False, "message": result.get('message', '生成失败')}
     except Exception as e:
