@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NovelMaster - 小说创作系统</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- 顶部导航 -->
+        <header class="header">
+            <div class="header-left">
+                <!-- 顶部导航栏返回按钮 -->
+                <button class="btn btn-nav-back" id="btn-back-to-manager-nav" onclick="goBackToBookManager()" style="display: none;">
+                    ← 返回书籍管理
+                </button>
+            </div>
+            <div class="header-center">
+                <h1 class="logo">NovelMaster <span class="version">v2.0</span></h1>
+            </div>
+            <div class="header-right">
+                <button class="btn btn-icon" onclick="showSettings()" title="设置">
+                    <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58z"/></svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- 主内容区 -->
+        <main class="main-layout">
+            <!-- ==================== 书籍管理页（首页） ==================== -->
+            <div class="book-manager-page" id="book-manager-page">
+                <div class="book-manager-header">
+                    <div class="welcome-icon-large">📝</div>
+                    <h1>欢迎使用 NovelMaster</h1>
+                    <p class="welcome-subtitle">开始一场创作之旅</p>
+                </div>
+                
+                <!-- 书籍工具栏 -->
+                <div class="book-manager-actions">
+                    <button class="btn btn-primary btn-lg" onclick="showCreateBook()">
+                        📚 新建书籍
+                    </button>
+                </div>
+                
+                <!-- 书籍列表 -->
+                <div class="book-manager-list-section">
+                    <h3 class="section-title">📖 我的书籍</h3>
+                    <div class="book-manager-table-wrapper">
+                        <table class="book-manager-table">
+                            <thead>
+                                <tr>
+                                    <th>书名</th>
+                                    <th>题材</th>
+                                    <th>平台</th>
+                                    <th>计划字数/章</th>
+                                    <th>章节</th>
+                                    <th>总字数</th>
+                                    <th>最新章节</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="book-manager-table-body">
+                                <!-- 动态加载 -->
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="book-manager-empty" id="book-manager-empty">
+                        <p>暂无书籍，点击上方"新建书籍"开始创作</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ==================== 写作页面 ==================== -->
+            <div class="writing-page" id="writing-page">
+                <!-- 左侧边栏 - 导航 -->
+                <aside class="sidebar" id="sidebar">
+                    <div class="sidebar-content">
+                        <!-- 书籍选择 -->
+                        <div class="sidebar-section">
+                            <div class="sidebar-section-header">书籍</div>
+                            <div class="book-list" id="book-list">
+                                <!-- 动态加载书籍列表 -->
+                            </div>
+                        </div>
+
+                        <!-- 书籍信息区域 -->
+                        <div class="sidebar-section book-info-section" id="book-info-section" style="display: none;">
+                            <div class="book-info-card">
+                                <div class="book-info-item">
+                                    <span class="book-info-label">题材</span>
+                                    <span class="book-info-value" id="book-info-genre">-</span>
+                                </div>
+                                <div class="book-info-item">
+                                    <span class="book-info-label">平台</span>
+                                    <span class="book-info-value" id="book-info-platform">-</span>
+                                </div>
+                                <div class="book-info-item">
+                                    <span class="book-info-label">计划字数</span>
+                                    <span class="book-info-value" id="book-info-words">-</span>
+                                </div>
+                                <div class="book-info-item">
+                                    <span class="book-info-label">计划章节</span>
+                                    <span class="book-info-value" id="book-info-chapters">-</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 快捷操作 -->
+                        <div class="sidebar-section">
+                            <div class="sidebar-section-title">📌 快捷操作</div>
+                            <nav class="sidebar-nav">
+                                <a href="#" class="nav-item" onclick="showDocManager(); return false;">
+                                    <span>📋</span> 设定管理
+                                </a>
+                                <a href="#" class="nav-item" onclick="showTrashModal(); return false;">
+                                    <span>🗑️</span> 回收站
+                                </a>
+                                <a href="#" class="nav-item" onclick="showGlobalSettings(); return false;">
+                                    <span>⚙️</span> 全局设置
+                                </a>
+                            </nav>
+                        </div>
+
+                        <!-- 章节列表 -->
+                        <div class="sidebar-section" id="chapter-list-section" style="display:none;">
+                            <div class="sidebar-section-header">
+                                <span>章节</span>
+                                <button class="btn btn-sm" onclick="showTrashModal()" title="回收站">🗑️</button>
+                            </div>
+                            <div class="chapter-list" id="chapter-list">
+                                <!-- 动态加载章节列表 -->
+                            </div>
+                        </div>
+                    </div>
+                </aside>
+
+                <!-- 中间对话栏 -->
+                <section class="chat-panel" id="chat-panel">
+                    <!-- 对话工具栏 -->
+                    <div class="chat-toolbar">
+                        <button class="btn btn-sm" onclick="showChatExportMenu()" title="导出对话">💾 导出</button>
+                        <button class="btn btn-sm" onclick="startNewChatSession()" title="新对话">💬 新对话</button>
+                        <button class="btn btn-sm btn-danger-text" onclick="clearChatHistory()" title="清空对话">🗑️ 清空</button>
+                    </div>
+
+                    <!-- 工具栏 - 标签页形式 -->
+                    <div class="toolbar-tabs">
+                        <div class="toolbar-tab-buttons">
+                            <button class="toolbar-tab-btn active" data-tab="write" onclick="switchToolbarTab('write')">
+                                <span>✍️</span> 撰写工具
+                            </button>
+                        </div>
+                        
+                        <!-- 撰写工具面板 -->
+                        <div class="toolbar-tab-content active" id="tab-write">
+                            <div class="target-chapter-row">
+                                <span class="target-label">目标章节:</span>
+                                <select id="target-chapter-select" class="form-select" onchange="onTargetChapterChange()">
+                                    <option value="">-- 选择章节 --</option>
+                                </select>
+                                <button class="btn btn-sm btn-danger" onclick="deleteCurrentChapter()" id="delete-chapter-btn" style="display:none;" title="删除章节">🗑️ 删除</button>
+                                <span class="current-chapter-hint" id="current-chapter-hint"></span>
+                            </div>
+                            <div class="write-tools-row">
+                                <button class="btn btn-tool" onclick="executeWrite('continue')">▶️ 续写</button>
+                                <button class="btn btn-tool" onclick="executeWrite('review')">🔍 评审</button>
+                                <button class="btn btn-tool" onclick="executeWrite('revise')">🔧 修订</button>
+                                <button class="btn btn-tool" onclick="executeWrite('regenerate')">🔄 重写</button>
+                            </div>
+                            <div class="auto-write-row">
+                                <span class="auto-label">自动续写:</span>
+                                <input type="number" id="auto-start-chapter" value="1" min="1" class="input-num">
+                                <span>~</span>
+                                <input type="number" id="auto-end-chapter" value="5" min="1" class="input-num">
+                                <label class="checkbox-inline"><input type="checkbox" id="auto-review" checked> 评审</label>
+                                <label class="checkbox-inline"><input type="checkbox" id="auto-revise" checked> 修订</label>
+                                <button class="btn btn-sm btn-primary" onclick="startAutoWrite()">🚀 开始</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 对话区域 -->
+                    <div class="chat-messages" id="chat-messages">
+                        <div class="chat-welcome" id="chat-welcome">
+                            <div class="welcome-icon">📝</div>
+                            <h2>欢迎使用 NovelMaster</h2>
+                            <p>开始一场创作之旅</p>
+                            <div class="welcome-actions">
+                                <button class="btn btn-primary" onclick="startNewBook()">
+                                    📚 创建新书
+                                </button>
+                                <button class="btn btn-secondary" onclick="selectExistingBook()">
+                                    📖 选择已有书籍
+                                </button>
+                            </div>
+                            <div class="welcome-tips">
+                                <p>💡 你可以随时在下方输入框中输入指令，与AI进行创作对话</p>
+                            </div>
+                        </div>
+                        <!-- 对话消息将动态插入到这里 -->
+                    </div>
+
+                    <!-- 输入区域 -->
+                    <div class="chat-input-area">
+                        <div class="chat-input-container">
+                            <textarea id="chat-input" placeholder="输入指令或问题... (Ctrl+Enter 发送)" rows="1"></textarea>
+                            <button class="btn btn-primary btn-send" onclick="sendChatMessage()">
+                                <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                            </button>
+                        </div>
+                        <div class="chat-status" id="chat-status"></div>
+                    </div>
+                </section>
+
+                <!-- 预览区域和对话区域的分隔条 -->
+                <div class="resize-handle" id="resize-handle"></div>
+
+                <!-- 右侧预览栏 -->
+                <aside class="preview-panel" id="preview-panel">
+                    <div class="preview-header">
+                        <span class="preview-title" id="preview-title">预览</span>
+                        <div class="preview-actions">
+                            <button class="btn btn-icon btn-sm" onclick="togglePreviewPanel(); event.stopPropagation();" title="隐藏预览">
+                                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="preview-content" id="preview-content">
+                        <div class="preview-empty">
+                            <p>选择文档查看内容</p>
+                        </div>
+                    </div>
+                </aside>
+            </div>
+        </main>
+
+        <!-- 创建书籍弹窗 -->
+        <div class="modal" id="create-book-modal">
+            <div class="modal-content modal-medium">
+                <div class="modal-header">
+                    <h3>创建新书</h3>
+                    <button class="btn-close" onclick="closeCreateBook()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>创作简报</label>
+                        <textarea id="new-book-brief" rows="10" placeholder="描述你的创作构想...
+
+例如：
+- 都市玄幻小说，主角获得上古传承
+- 修仙世界，废材逆袭成为一代仙帝
+- 现代都市，商业天才的崛起之路"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="closeCreateBook()">取消</button>
+                    <button class="btn btn-primary" onclick="createNewBook()">开始创建</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 设置弹窗 -->
+        <div class="modal" id="settings-modal">
+            <div class="modal-content modal-large">
+                <div class="modal-header">
+                    <h3>LLM 配置</h3>
+                    <button class="btn-close" onclick="closeSettings()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="settings-tabs">
+                        <button class="tab-btn active" data-tab="providers" onclick="switchSettingsTab('providers')">提供商</button>
+                        <button class="tab-btn" data-tab="provider-config" onclick="switchSettingsTab('provider-config')">配置</button>
+                        <button class="tab-btn" data-tab="llm-logs" onclick="switchSettingsTab('llm-logs')">运行日志</button>
+                        <button class="tab-btn" data-tab="doc-files" onclick="switchSettingsTab('doc-files')">设定文件</button>
+                    </div>
+                    
+                    <!-- 提供商列表 -->
+                    <div id="tab-providers">
+                        <div id="providers-list" class="providers-list"></div>
+                        <button class="btn btn-secondary" onclick="showAddProvider()" style="margin-top: 1rem;">
+                            + 添加提供商
+                        </button>
+                    </div>
+                    
+                    <!-- 提供商配置 -->
+                    <div id="tab-provider-config" style="display:none;">
+                        <div id="provider-config-form"></div>
+                    </div>
+                    
+                    <!-- LLM日志 -->
+                    <div id="tab-llm-logs" style="display:none;">
+                        <div class="logs-toolbar">
+                            <select id="log-file-select" class="form-select" onchange="loadSelectedLog()">
+                                <option value="">-- 选择日志文件 --</option>
+                            </select>
+                            <button class="btn btn-secondary" onclick="loadLogsList()">刷新</button>
+                        </div>
+                        <pre id="log-content" class="log-content"></pre>
+                    </div>
+
+                    <!-- 设定文件 -->
+                    <div id="tab-doc-files" style="display:none;">
+                        <div id="doc-files-list" class="doc-files-list">
+                            <div class="text-muted">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 添加提供商弹窗 -->
+        <div class="modal" id="add-provider-modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>添加提供商</h3>
+                    <button class="btn-close" onclick="closeAddProvider()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>选择模板</label>
+                        <select id="provider-template" onchange="onTemplateChange()">
+                            <option value="">-- 选择 --</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>提供商名称</label>
+                        <input type="text" id="provider-name" placeholder="自定义名称，如：我的DeepSeek">
+                    </div>
+                    <div class="form-group">
+                        <label>API 密钥 <span class="required">*</span></label>
+                        <input type="password" id="provider-api-key" placeholder="请输入API密钥">
+                    </div>
+                    <div class="form-group">
+                        <label>Base URL</label>
+                        <input type="text" id="provider-base-url" placeholder="API地址">
+                    </div>
+                    <div class="form-group">
+                        <label>模型</label>
+                        <input type="text" id="provider-model" placeholder="模型名称">
+                    </div>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="provider-stream">
+                            启用流式输出
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="closeAddProvider()">取消</button>
+                    <button class="btn btn-primary" onclick="addProvider()">添加</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 全局设置弹窗 -->
+        <div class="modal" id="global-settings-modal">
+            <div class="modal-content modal-large">
+                <div class="modal-header">
+                    <h3>全局设置</h3>
+                    <button class="btn-close" onclick="closeGlobalSettings()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="settings-tabs">
+                        <button class="tab-btn active" data-tab="global-filter" onclick="switchGlobalTab('global-filter')">过滤词库</button>
+                        <button class="tab-btn" data-tab="global-template" onclick="switchGlobalTab('global-template')">提示词模板</button>
+                    </div>
+                    
+                    <div id="tab-global-filter" class="global-tab-content">
+                        <div class="form-group">
+                            <label>禁用词（每行一个）</label>
+                            <textarea id="global-banned-words" rows="5" placeholder="敏感词列表..."></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>敏感话题（每行一个）</label>
+                            <textarea id="global-sensitive-topics" rows="5" placeholder="敏感话题..."></textarea>
+                        </div>
+                    </div>
+                    
+                    <div id="tab-global-template" class="global-tab-content" style="display:none;">
+                        <div class="form-group">
+                            <label>系统提示词模板</label>
+                            <textarea id="global-system-prompt" rows="10" placeholder="自定义系统提示词..."></textarea>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="closeGlobalSettings()">取消</button>
+                    <button class="btn btn-primary" onclick="saveGlobalSettings()">保存</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Trash 回收站弹窗 -->
+        <div class="modal" id="trash-modal">
+            <div class="modal-content modal-large">
+                <div class="modal-header">
+                    <h3>🗑️ Trash 回收站</h3>
+                    <button class="btn-close" onclick="closeTrashModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="trash-list" class="trash-list">
+                        <div class="text-muted">加载中...</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="closeTrashModal()">关闭</button>
+                    <button class="btn btn-secondary" onclick="loadTrashList()">🔄 刷新</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Trash 内容预览弹窗 -->
+        <div class="modal" id="trash-preview-modal">
+            <div class="modal-content modal-large">
+                <div class="modal-header">
+                    <h3 id="trash-preview-title">章节内容</h3>
+                    <button class="btn-close" onclick="closeTrashPreview()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <pre id="trash-preview-content" class="preview-content"></pre>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="closeTrashPreview()">关闭</button>
+                    <button class="btn btn-primary" id="trash-restore-btn" onclick="restoreTrashItem()">🔄 恢复此版本</button>
+                    <button class="btn btn-danger" id="trash-delete-btn" onclick="deleteTrashItem()">🗑️ 永久删除</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 设定文件预览弹窗 -->
+        <div class="modal" id="doc-preview-modal">
+            <div class="modal-content modal-large">
+                <div class="modal-header">
+                    <h3 id="doc-preview-title">设定文件</h3>
+                    <button class="btn-close" onclick="closeDocPreview()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <pre id="doc-preview-content" class="preview-content"></pre>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="closeDocPreview()">关闭</button>
+                    <button class="btn btn-primary" id="doc-regenerate-btn" onclick="regenerateSelectedDoc()">🔄 重新生成</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 删除章节确认弹窗 -->
+    <div class="modal" id="delete-chapter-modal">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h3>⚠️ 删除章节</h3>
+                <button class="btn-close" onclick="closeDeleteChapterModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="delete-chapter-message">确定要删除此章节吗？</p>
+                <p class="text-muted">删除后章节将移至回收站，可在回收站中恢复。</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeDeleteChapterModal()">取消</button>
+                <button class="btn btn-danger" onclick="confirmDeleteChapter()">确认删除</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 内容预览弹窗 -->
+    <div class="modal" id="content-preview-modal">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3 id="content-preview-title">内容预览</h3>
+                <button class="btn-close" onclick="closeContentPreview()">&times;</button>
+            </div>
+            <div class="modal-body content-preview-body" id="content-preview-body" style="max-height: 60vh; overflow-y: auto;">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeContentPreview()">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 对话导出菜单 -->
+    <div class="modal" id="chat-export-modal">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h3>💾 对话导出</h3>
+                <button class="btn-close" onclick="closeChatExportMenu()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="export-info">当前对话: <span id="export-message-count">0</span> 条消息</p>
+                <div class="export-actions">
+                    <button class="btn btn-primary btn-block" onclick="exportChatJSON()">
+                        📄 导出为 JSON
+                    </button>
+                    <button class="btn btn-primary btn-block" onclick="exportChatMarkdown()">
+                        📝 导出为 Markdown
+                    </button>
+                    <button class="btn btn-secondary btn-block" onclick="saveChatToBook()" id="save-to-book-btn" style="display:none;">
+                        📚 保存到本书目录
+                    </button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeChatExportMenu()">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 设定管理模态框 -->
+    <div class="modal" id="doc-manager-modal">
+        <div class="modal-content modal-extra-large">
+            <div class="modal-header">
+                <h3>📋 设定管理</h3>
+                <button class="btn-close" onclick="closeDocManager()">&times;</button>
+            </div>
+            <div class="modal-body doc-manager-body">
+                <!-- 左侧：主设定文件 -->
+                <div class="doc-manager-section">
+                    <h4 class="doc-manager-section-title">📚 主设定文件</h4>
+                    <p class="doc-manager-hint">点击卡片查看详情，点击按钮重新生成</p>
+                    <div class="doc-manager-grid" id="doc-manager-main-list">
+                        <!-- 动态加载 -->
+                    </div>
+                </div>
+                
+                <!-- 右侧：真相文件 -->
+                <div class="doc-manager-section">
+                    <h4 class="doc-manager-section-title">🔍 真相文件</h4>
+                    <p class="doc-manager-hint">由AI自动维护，基于章节内容更新</p>
+                    <div class="doc-manager-grid" id="doc-manager-truth-list">
+                        <!-- 动态加载 -->
+                    </div>
+                    <div class="doc-manager-actions">
+                        <button class="btn btn-warning" onclick="regenerateAllTruthFiles()">
+                            ⚠️ 重新生成全部真相文件
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeDocManager()">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js?v=7"></script>
+</body>
+</html>
