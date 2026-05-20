@@ -170,41 +170,6 @@
                         <button class="btn btn-sm btn-danger-text" onclick="clearChatHistory()" title="清空对话">🗑️ 清空</button>
                     </div>
 
-                    <!-- 工具栏 - 标签页形式 -->
-                    <div class="toolbar-tabs">
-                        <div class="toolbar-tab-buttons">
-                            <button class="toolbar-tab-btn active" data-tab="write" onclick="switchToolbarTab('write')">
-                                <span>✍️</span> 撰写工具
-                            </button>
-                        </div>
-                        
-                        <!-- 撰写工具面板 -->
-                        <div class="toolbar-tab-content active" id="tab-write">
-                            <div class="target-chapter-row">
-                                <span class="target-label">目标章节:</span>
-                                <select id="target-chapter-select" class="form-select" onchange="onTargetChapterChange()">
-                                    <option value="">-- 选择章节 --</option>
-                                </select>
-                                <button class="btn btn-sm btn-danger" onclick="deleteCurrentChapter()" id="delete-chapter-btn" style="display:none;" title="删除章节">🗑️ 删除</button>
-                                <span class="current-chapter-hint" id="current-chapter-hint"></span>
-                            </div>
-                            <div class="write-tools-row">
-                                <button class="btn btn-tool" onclick="executeWrite('continue')">▶️ 续写</button>
-                                <button class="btn btn-tool" onclick="executeWrite('review')">🔍 评审</button>
-                                <button class="btn btn-tool" onclick="executeWrite('revise')">🔧 修订</button>
-                                <button class="btn btn-tool" onclick="executeWrite('regenerate')">🔄 重写</button>
-                            </div>
-                            <div class="auto-write-row">
-                                <span class="auto-label">自动续写:</span>
-                                <input type="number" id="auto-chapter-count" value="5" min="1" max="20" class="input-num">
-                                <span>章</span>
-                                <label class="checkbox-inline"><input type="checkbox" id="auto-review" checked> 评审</label>
-                                <label class="checkbox-inline"><input type="checkbox" id="auto-revise" checked> 修订</label>
-                                <button class="btn btn-sm btn-primary" onclick="startAutoWrite()">🚀 开始</button>
-                            </div>
-                        </div>
-                    </div>
-
                     <!-- 对话区域 -->
                     <div class="chat-messages" id="chat-messages">
                         <div class="chat-welcome" id="chat-welcome">
@@ -219,20 +184,45 @@
                                     📖 选择已有书籍
                                 </button>
                             </div>
-                            <div class="welcome-tips">
-                                <p>💡 你可以随时在下方输入框中输入指令，与AI进行创作对话</p>
-                            </div>
                         </div>
                         <!-- 对话消息将动态插入到这里 -->
                     </div>
 
-                    <!-- 输入区域 -->
-                    <div class="chat-input-area">
-                        <div class="chat-input-container">
-                            <textarea id="chat-input" placeholder="输入指令或问题... (Ctrl+Enter 发送)" rows="1"></textarea>
-                            <button class="btn btn-primary btn-send" onclick="sendChatMessage()">
-                                <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-                            </button>
+                    <!-- 底部工具栏 -->
+                    <div class="chat-toolbar-bottom">
+                        <!-- 工具栏 - 标签页形式 -->
+                        <div class="toolbar-tabs">
+                            <div class="toolbar-tab-buttons">
+                                <button class="toolbar-tab-btn active" data-tab="write" onclick="switchToolbarTab('write')">
+                                    <span>✍️</span> 撰写工具
+                                </button>
+                            </div>
+                            
+                            <!-- 撰写工具面板 -->
+                            <div class="toolbar-tab-content active" id="tab-write">
+                                <div class="target-chapter-row">
+                                    <span class="target-label">目标章节:</span>
+                                    <select id="target-chapter-select" class="form-select" onchange="onTargetChapterChange()">
+                                        <option value="">-- 选择章节 --</option>
+                                    </select>
+                                    <button class="btn btn-sm btn-danger" onclick="deleteCurrentChapter()" id="delete-chapter-btn" style="display:none;" title="删除章节">🗑️ 删除</button>
+                                    <span class="current-chapter-hint" id="current-chapter-hint"></span>
+                                </div>
+                                <div class="write-tools-row">
+                                    <button class="btn btn-tool" onclick="executeWrite('continue')">▶️ 续写</button>
+                                    <button class="btn btn-tool" onclick="executeWrite('review')">🔍 评审</button>
+                                    <button class="btn btn-tool" onclick="executeWrite('revise')">🔧 修订</button>
+                                    <button class="btn btn-tool" onclick="executeWrite('regenerate')">🔄 重写</button>
+                                </div>
+                                <div class="auto-write-row">
+                                    <span class="auto-label">自动续写:</span>
+                                    <input type="number" id="auto-chapter-count" value="5" min="1" max="20" class="input-num">
+                                    <span>章</span>
+                                    <label class="checkbox-inline"><input type="checkbox" id="auto-review" checked> 评审</label>
+                                    <label class="checkbox-inline"><input type="checkbox" id="auto-revise" checked> 修订</label>
+                                    <button class="btn btn-sm btn-primary" onclick="startAutoWrite()">🚀 开始</button>
+                                </div>
+                            </div>
                         </div>
                         <div class="chat-status" id="chat-status"></div>
                     </div>

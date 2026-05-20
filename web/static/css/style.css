@@ -1173,6 +1173,39 @@ body {
     padding: 0;
 }
 
+/* 底部工具栏容器 */
+.chat-toolbar-bottom {
+    background: var(--bg-card);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+    width: 100%;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+}
+
+/* 底部工具栏中的 toolbar-tabs */
+.chat-toolbar-bottom .toolbar-tabs {
+    border-bottom: none;
+}
+
+.chat-toolbar-bottom .toolbar-tab-content {
+    padding: 0.75rem 1rem;
+}
+
+/* 灵感状态显示（优先级高于chat-status） */
+.inspiration-status {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-align: center;
+    min-height: 1rem;
+    padding: 0.25rem 0;
+}
+
+.inspiration-status.running {
+    color: var(--warning);
+}
+
 .chat-status {
     margin-top: 0.5rem;
     font-size: 0.75rem;
@@ -1639,6 +1672,32 @@ body {
     box-sizing: border-box;
 }
 
+/* 灵感模式底部工具栏 */
+.inspiration-toolbar-bottom {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.inspiration-toolbar-bottom .inspiration-mode-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.inspiration-toolbar-bottom .inspiration-icon {
+    font-size: 1.1rem;
+}
+
+.inspiration-toolbar-bottom .inspiration-exit-btn {
+    padding: 0.25rem 0.75rem;
+    font-size: 0.8125rem;
+}
+
 .inspiration-input-wrapper {
     display: flex;
     gap: 0.75rem;
@@ -1669,18 +1728,6 @@ body {
 .inspiration-input-wrapper .btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
-}
-
-.inspiration-status {
-    font-size: 0.75rem;
-    color: var(--text-secondary);
-    text-align: center;
-    min-height: 1rem;
-    padding: 0.25rem 0;
-}
-
-.inspiration-status.running {
-    color: var(--warning);
 }
 
 .inspiration-input-wrapper .btn-send {

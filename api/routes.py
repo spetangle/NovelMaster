@@ -221,6 +221,178 @@ async def auto_complete_inspiration(book_id: str):
     return result
 
 
+@router.get("/books/{book_id}/inspiration/status")
+async def get_inspiration_status(book_id: str):
+    """获取灵感收集情况"""
+    # 从 book_index 获取灵感数据
+    with engine.sm._lock:
+        book_dict = None
+        for b in engine.sm.book_index.get("books", []):
+            if b.get("id") == book_id:
+                book_dict = b
+                break
+
+    if not book_dict:
+        raise HTTPException(status_code=404, detail="书籍不存在")
+
+    collected_info = book_dict.get("inspiration_collected_info", {})
+
+    # 定义字段
+    field_defs = [
+        {"key": "book_name", "name": "书名", "required": True},
+        {"key": "genre", "name": "题材", "required": True},
+        {"key": "platform", "name": "平台", "required": True},
+        {"key": "words_per_chapter", "name": "章节字数", "required": False},
+        {"key": "total_chapters", "name": "总章节数", "required": False},
+        {"key": "background", "name": "背景设定", "required": True},
+        {"key": "protagonist", "name": "主角信息", "required": True},
+        {"key": "main_conflict", "name": "核心冲突", "required": True},
+        {"key": "power_system", "name": "力量体系", "required": False},
+        {"key": "factions", "name": "势力设定", "required": False},
+        {"key": "locations", "name": "地理环境", "required": False},
+        {"key": "tone_style", "name": "文风基调", "required": False}
+    ]
+
+    # 统计
+    filled_fields = []
+    missing_fields = []
+    required_filled = 0
+    required_total = 0
+
+    for f in field_defs:
+        value = collected_info.get(f["key"], "")
+        is_filled = bool(value and str(value).strip())
+        field_info = {"key": f["key"], "name": f["name"], "value": value or "", "filled": is_filled}
+
+        if is_filled:
+            filled_fields.append(field_info)
+            if f["required"]:
+                required_filled += 1
+        else:
+            missing_fields.append(field_info)
+            if f["required"]:
+                required_total += 1
+
+    return {
+        "success": True,
+        "collected_info": collected_info,
+        "filled_fields": filled_fields,
+        "missing_fields": missing_fields,
+        "field_defs": field_defs,
+        "stats": {
+            "total": len(field_defs),
+            "filled": len(filled_fields),
+            "missing": len(missing_fields),
+            "required_filled": required_filled,
+            "required_total": required_total,
+            "completion_rate": round(len(filled_fields) / len(field_defs) * 100),
+            "required_rate": round(required_filled / required_total * 100) if required_total > 0 else 100,
+            "can_generate": required_filled >= required_total
+        }
+    }
+
+
+@router.post("/books/{book_id}/inspiration/save-report")
+async def save_inspiration_report(book_id: str):
+    """保存灵感收集情况报告到文件"""
+    # 从 book_index 获取灵感数据
+    with engine.sm._lock:
+        book_dict = None
+        for b in engine.sm.book_index.get("books", []):
+            if b.get("id") == book_id:
+                book_dict = b
+                break
+
+    if not book_dict:
+        raise HTTPException(status_code=404, detail="书籍不存在")
+
+    collected_info = book_dict.get("inspiration_collected_info", {})
+
+    # 定义字段
+    field_defs = [
+        {"key": "book_name", "name": "书名", "required": True},
+        {"key": "genre", "name": "题材", "required": True},
+        {"key": "platform", "name": "平台", "required": True},
+        {"key": "words_per_chapter", "name": "章节字数", "required": False},
+        {"key": "total_chapters", "name": "总章节数", "required": False},
+        {"key": "background", "name": "背景设定", "required": True},
+        {"key": "protagonist", "name": "主角信息", "required": True},
+        {"key": "main_conflict", "name": "核心冲突", "required": True},
+        {"key": "power_system", "name": "力量体系", "required": False},
+        {"key": "factions", "name": "势力设定", "required": False},
+        {"key": "locations", "name": "地理环境", "required": False},
+        {"key": "tone_style", "name": "文风基调", "required": False}
+    ]
+
+    # 生成报告内容
+    lines = ["# 灵感收集情况报告\n"]
+    lines.append(f"**生成时间**：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+    # 已填写内容
+    lines.append("## 已填写内容\n")
+    filled_count = 0
+    for f in field_defs:
+        value = collected_info.get(f["key"], "")
+        if value and str(value).strip():
+            filled_count += 1
+            lines.append(f"### {f['name']}\n")
+            lines.append(f"{value}\n")
+
+    # 缺失内容
+    lines.append("\n## 缺失内容\n")
+    missing_count = 0
+    for f in field_defs:
+        value = collected_info.get(f["key"], "")
+        if not value or not str(value).strip():
+            missing_count += 1
+            marker = "⭐" if f["required"] else ""
+            lines.append(f"- {f['name']} {marker}\n")
+
+    # 统计
+    lines.append("\n## 统计信息\n")
+    lines.append(f"- 总字段数：{len(field_defs)}")
+    lines.append(f"- 已填写：{filled_count} ({round(filled_count/len(field_defs)*100)}%)")
+    lines.append(f"- 缺失：{missing_count}")
+    lines.append(f"- 必填项：{len([f for f in field_defs if f['required']])}")
+    lines.append(f"- 可生成文档：{'是' if filled_count >= len([f for f in field_defs if f['required']]) else '否'}")
+
+    report_content = "\n".join(lines)
+
+    # 保存到书籍目录
+    book = engine.sm.get_book_by_id(book_id)
+    book_path = engine.workspace / book.path
+    report_file = book_path / "inspiration_report.md"
+
+    try:
+        report_file.write_text(report_content, encoding='utf-8')
+        return {
+            "success": True,
+            "file_path": str(report_file),
+            "content": report_content
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"保存报告失败: {str(e)}")
+
+
+@router.delete("/books/{book_id}/inspiration/report")
+async def delete_inspiration_report(book_id: str):
+    """删除灵感收集报告文件"""
+    book = engine.sm.get_book_by_id(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="书籍不存在")
+
+    book_path = engine.workspace / book.path
+    report_file = book_path / "inspiration_report.md"
+
+    if report_file.exists():
+        try:
+            report_file.unlink()
+            return {"success": True, "message": "报告已删除"}
+        except Exception as e:
+            return {"success": False, "message": f"删除失败: {str(e)}"}
+    return {"success": True, "message": "文件不存在，无需删除"}
+
+
 @router.post("/books/{book_id}/inspiration/generate-docs")
 async def generate_inspiration_docs(book_id: str):
     """生成设定文档（灵感模式完成后）"""
@@ -245,9 +417,12 @@ async def generate_inspiration_docs(book_id: str):
                 'estimated_chapters': collected.get('total_chapters', 80),
             }
             
-            # 使用带进度回调的工作流
+            # 使用带进度回调的工作流，传入取消检查函数
             def progress_callback(step, progress, message):
                 task_manager.update_task(task.id, step=step, progress=progress, message=message)
+            
+            def cancel_check():
+                return task_manager.is_cancelled(task.id)
             
             # 执行创建流程
             result = engine.create_book_workflow_with_progress(
@@ -259,8 +434,14 @@ async def generate_inspiration_docs(book_id: str):
                 f"背景设定：{collected.get('background', '')}\n" +
                 f"主角信息：{collected.get('protagonist', '')}",
                 book_id,
-                progress_callback
+                progress_callback,
+                cancel_check
             )
+            
+            # 检查是否被取消
+            if task_manager.is_cancelled(task.id) or result.get('cancelled'):
+                task_manager.update_task(task.id, status=TaskStatus.TERMINATED, message="任务已终止")
+                return
             
             if result.get('success'):
                 # 标记书籍不再是灵感模式
