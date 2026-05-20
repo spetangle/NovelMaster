@@ -215,6 +215,16 @@ body {
     border-bottom: 1px dashed var(--border);
 }
 
+.book-info-action:hover {
+    text-decoration: underline;
+}
+
+.inspiration-entry-item {
+    margin-top: 0.5rem;
+    padding-top: 0.5rem !important;
+    border-top: 1px dashed var(--border) !important;
+}
+
 .book-info-label {
     color: var(--text-secondary);
 }
@@ -992,6 +1002,53 @@ body {
     padding: 1rem;
 }
 
+/* 灵感模式消息样式 */
+#chat-messages .message {
+    display: flex;
+    margin-bottom: 1rem;
+    animation: fadeIn 0.3s ease;
+}
+
+#chat-messages .message.user-message {
+    flex-direction: row-reverse;
+}
+
+#chat-messages .message.user-message .message-content {
+    background: var(--primary);
+    color: white;
+    border-radius: 1rem;
+    border-bottom-right-radius: 0.25rem;
+    padding: 0.875rem 1rem;
+    max-width: 85%;
+}
+
+#chat-messages .message.ai-message .message-content,
+#chat-messages .message.assistant .message-content {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 1rem;
+    border-bottom-left-radius: 0.25rem;
+    padding: 0.875rem 1rem;
+    max-width: 85%;
+}
+
+#chat-messages .message.system-message .message-content {
+    background: rgba(255, 193, 7, 0.15);
+    border: 1px solid rgba(255, 193, 7, 0.3);
+    border-radius: 0.75rem;
+    padding: 0.75rem 1rem;
+    max-width: 90%;
+    margin: 0 auto;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+#chat-messages .message .message-content {
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 .task-progress-header {
     display: flex;
     align-items: center;
@@ -1077,6 +1134,8 @@ body {
     background: var(--bg-card);
     border-top: 1px solid var(--border);
     flex-shrink: 0;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .chat-input-container {
@@ -1389,6 +1448,368 @@ body {
 .checkbox-label input[type="checkbox"] {
     width: 16px;
     height: 16px;
+}
+
+.form-hint {
+    margin-top: 0.25rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+/* ==================== 灵感对话模式 ==================== */
+.inspiration-mode {
+    background: linear-gradient(135deg, var(--bg-card), var(--bg-secondary));
+}
+
+.inspiration-progress-panel {
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+.inspiration-progress-header {
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+    color: var(--text-primary);
+}
+
+.inspiration-field-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.inspiration-field-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-dark);
+    border-radius: 6px;
+    font-size: 0.8125rem;
+}
+
+.inspiration-field-item.filled {
+    background: rgba(76, 175, 80, 0.1);
+    border-left: 3px solid var(--success);
+}
+
+.inspiration-field-item.missing {
+    background: rgba(255, 193, 7, 0.1);
+    border-left: 3px solid var(--warning);
+}
+
+.inspiration-field-label {
+    color: var(--text-secondary);
+}
+
+.inspiration-field-value {
+    color: var(--text-primary);
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.inspiration-field-item.filled .inspiration-field-value {
+    color: var(--success);
+}
+
+.inspiration-field-item.missing .inspiration-field-value {
+    color: var(--warning);
+}
+
+/* 保存状态提示 */
+.save-status {
+    margin-top: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--success);
+    opacity: 0.8;
+    text-align: right;
+}
+
+.inspiration-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 1rem;
+    flex-wrap: wrap;
+}
+
+.inspiration-actions #decide-for-me-btn {
+    background: linear-gradient(135deg, #10b981, #059669);
+    border-color: #059669;
+}
+
+.inspiration-actions #decide-for-me-btn:hover:not(:disabled) {
+    background: linear-gradient(135deg, #059669, #047857);
+    border-color: #047857;
+}
+
+.inspiration-actions .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* 灵感模式顶部栏 */
+.inspiration-mode-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    background: linear-gradient(135deg, var(--primary), #7c3aed);
+    border-radius: 0.75rem;
+    margin-bottom: 0.75rem;
+    color: white;
+}
+
+.inspiration-mode-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+    font-size: 0.9375rem;
+}
+
+.inspiration-mode-title .inspiration-icon {
+    font-size: 1.125rem;
+}
+
+.inspiration-exit-btn {
+    background: rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: white;
+    padding: 0.375rem 0.75rem;
+    font-size: 0.8125rem;
+}
+
+.inspiration-exit-btn:hover {
+    background: rgba(255, 255, 255, 0.3);
+    border-color: rgba(255, 255, 255, 0.5);
+}
+
+/* 灵感对话中的消息样式 */
+.inspiration-msg {
+    padding: 0.75rem 1rem;
+    border-radius: 12px;
+    margin-bottom: 0.75rem;
+    max-width: 85%;
+}
+
+.inspiration-msg.user {
+    background: var(--primary);
+    color: white;
+    margin-left: auto;
+    border-bottom-right-radius: 4px;
+}
+
+.inspiration-msg.assistant {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border-bottom-left-radius: 4px;
+}
+
+.inspiration-msg.system {
+    background: rgba(255, 193, 7, 0.15);
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    text-align: center;
+    max-width: 100%;
+}
+
+/* 设定文档列表（灵感模式） */
+.doc-list-panel {
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    padding: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+/* 灵感模式输入区域 */
+.inspiration-input-container {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.inspiration-input-container * {
+    box-sizing: border-box;
+}
+
+.inspiration-input-wrapper {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-end;
+}
+
+.inspiration-input-wrapper textarea {
+    flex: 1;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    background: var(--bg-dark);
+    color: var(--text-primary);
+    resize: none;
+    font-family: inherit;
+    font-size: 0.9375rem;
+    min-height: 60px;
+    max-height: 150px;
+    overflow-y: auto;
+}
+
+.inspiration-input-wrapper textarea:focus {
+    outline: none;
+    border-color: var(--primary);
+}
+
+.inspiration-input-wrapper textarea:disabled,
+.inspiration-input-wrapper .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.inspiration-status {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-align: center;
+    min-height: 1rem;
+    padding: 0.25rem 0;
+}
+
+.inspiration-status.running {
+    color: var(--warning);
+}
+
+.inspiration-input-wrapper .btn-send {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    flex-shrink: 0;
+}
+
+.doc-list-header {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 0.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.doc-list-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.2s;
+    font-size: 0.875rem;
+}
+
+.doc-list-item:hover {
+    background: var(--bg-dark);
+}
+
+.doc-list-item.active {
+    background: var(--primary);
+    color: white;
+}
+
+.doc-list-item .doc-icon {
+    font-size: 1rem;
+}
+
+.doc-list-item .doc-name {
+    flex: 1;
+}
+
+.doc-list-item .doc-status {
+    font-size: 0.75rem;
+    padding: 0.125rem 0.375rem;
+    border-radius: 4px;
+}
+
+.doc-list-item .doc-status.pending {
+    background: rgba(255, 193, 7, 0.2);
+    color: var(--warning);
+}
+
+.doc-list-item .doc-status.auditing {
+    background: rgba(33, 150, 243, 0.2);
+    color: #2196F3;
+}
+
+.doc-list-item .doc-status.done {
+    background: rgba(76, 175, 80, 0.2);
+    color: var(--success);
+}
+
+.doc-list-item .doc-status.failed {
+    background: rgba(244, 67, 54, 0.2);
+    color: var(--danger);
+}
+
+/* 灵感模式子任务状态 */
+.inspiration-subtask {
+    background: var(--bg-dark);
+    border-radius: 6px;
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+}
+
+.inspiration-subtask-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.inspiration-subtask-name {
+    font-size: 0.8125rem;
+    font-weight: 500;
+}
+
+.inspiration-subtask-status {
+    font-size: 0.75rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 4px;
+}
+
+.inspiration-subtask-status.running {
+    background: rgba(33, 150, 243, 0.2);
+    color: #2196F3;
+}
+
+.inspiration-subtask-status.success {
+    background: rgba(76, 175, 80, 0.2);
+    color: var(--success);
+}
+
+.inspiration-subtask-status.failed {
+    background: rgba(244, 67, 54, 0.2);
+    color: var(--danger);
+}
+
+.inspiration-subtask-progress {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.inspiration-subtask-progress-bar {
+    height: 100%;
+    background: var(--primary);
+    transition: width 0.3s;
 }
 
 /* Modal */

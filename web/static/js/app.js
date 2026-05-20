@@ -12,6 +12,8 @@ let currentTaskId = null;
 let taskPollInterval = null;
 let lockedChapters = {};  // {chapterNum: taskId}
 let autoSaveTimer = null;  // 自动保存定时器
+let isInspirationMode = false;  // 是否在灵感对话模式
+let currentInspirationBookId = null;  // 当前灵感模式书籍ID
 const AUTO_SAVE_INTERVAL = 30000;  // 30秒自动保存一次
 
 // ==================== 页面切换 ====================
@@ -336,6 +338,10 @@ function initWelcomeView() {
     }
 }
 
+function showWelcomeView() {
+    initWelcomeView();
+}
+
 function hideWelcomeView() {
     const chatWelcome = document.getElementById('chat-welcome');
     const resizeHandle = document.getElementById('resize-handle');
@@ -383,19 +389,30 @@ async function selectBook(bookId, silent = false) {
         await loadChapterList();
         await updateDocStatus();
         updateChapterHintUI();  // 更新章节提示
-        updateBookInfoSection();  // 更新书籍信息区域
+        await updateBookInfoSection();  // 更新书籍信息区域
 
         // 加载最新的聊天记录
         await loadLatestChatLog();
-        
+
         // 检查是否有正在进行的创建任务
         await checkAndResumeCreatingTask(bookId);
-        
+
         // 显示写作页面
         showWritingPage();
 
+        // 如果是灵感模式书籍，自动进入灵感对话模式
+        if (currentBook.is_inspiration) {
+            isInspirationMode = true;
+            currentInspirationBookId = currentBook.id;
+            addSystemMessage(`💡 进入灵感对话模式...`);
+            await enterInspirationMode();
+            await loadInspirationDialogue(currentBook.id);
+        }
+
         if (!silent) {
-            addSystemMessage(`已选择书籍《${currentBook.name}》，可以开始创作了。`);
+            if (!currentBook.is_inspiration) {
+                addSystemMessage(`已选择书籍《${currentBook.name}》，可以开始创作了。`);
+            }
         }
     } else {
         console.error('Failed to load book:', res);
@@ -428,7 +445,7 @@ async function checkAndResumeCreatingTask(bookId) {
 }
 
 // 更新书籍信息区域
-function updateBookInfoSection() {
+async function updateBookInfoSection() {
     const bookInfoSection = document.getElementById('book-info-section');
     if (!bookInfoSection || !currentBook) {
         if (bookInfoSection) bookInfoSection.style.display = 'none';
@@ -446,6 +463,45 @@ function updateBookInfoSection() {
 
     const totalChapters = currentBook.total_chapters;
     document.getElementById('book-info-chapters').textContent = totalChapters ? `${totalChapters}章` : '-';
+
+    // 检查灵感模式状态
+    await checkInspirationStatus();
+}
+
+// 检查并更新灵感模式入口显示
+async function checkInspirationStatus() {
+    if (!currentBook) return;
+    
+    try {
+        const res = await api(`/api/books/${currentBook.id}/inspiration-status`);
+        const inspirationWrapper = document.getElementById('inspiration-entry-wrapper');
+        const inspirationEntry = document.getElementById('inspiration-entry');
+        
+        if (!inspirationWrapper || !inspirationEntry) return;
+        
+        // 隐藏 wrapper，默认不显示
+        inspirationWrapper.style.display = 'none';
+        
+        if (res.success && res.can_enter) {
+            // 可以进入灵感模式
+            inspirationWrapper.style.display = 'flex';
+            inspirationEntry.title = '进入灵感对话模式，完善创作设定';
+            
+            // 如果有对话历史，提示可以继续
+            if (res.has_dialogue) {
+                inspirationEntry.textContent = `💡 继续灵感对话 (${res.dialogue_count}条)`;
+            } else {
+                inspirationEntry.textContent = '💡 灵感对话';
+            }
+        } else if (res.is_inspiration_mode) {
+            // 正在灵感模式中
+            inspirationWrapper.style.display = 'flex';
+            inspirationEntry.textContent = '💡 继续灵感对话';
+            inspirationEntry.title = '继续灵感对话';
+        }
+    } catch (e) {
+        console.error('检查灵感状态失败:', e);
+    }
 }
 
 // 聊天记录状态
@@ -1069,7 +1125,8 @@ function triggerAutoSave() {
 
 // 自动保存聊天记录
 async function autoSaveChatLog() {
-    if (!currentBook || chatHistory.length === 0) return;
+    // 灵感模式下不保存到 chat-logs（使用灵感专用存储）
+    if (!currentBook || chatHistory.length === 0 || isInspirationMode) return;
     
     try {
         const today = new Date().toISOString().split('T')[0];
@@ -2846,41 +2903,106 @@ function clearTaskProgress() {
 
 // 创建新书（异步执行：先创建记录，后台执行工作流）
 async function createNewBook() {
+    console.log('=== createNewBook 被调用 ===');
     const brief = document.getElementById('new-book-brief').value.trim();
+    const inspirationMode = document.getElementById('inspiration-mode-checkbox').checked;
+    console.log('创作简报:', brief);
+    console.log('灵感模式:', inspirationMode);
+    
     if (!brief) {
         alert('请输入创作简报');
         return;
     }
     
     closeCreateBook();
-    addUserMessage(brief);
-    addSystemMessage('正在创建新书...');
     
     try {
         // 创建书籍（异步执行工作流）
+        console.log('正在调用 API /api/books...');
         const res = await api('/api/books', {
             method: 'POST',
-            body: { brief }
+            body: { brief, inspiration_mode: inspirationMode }
         });
+        console.log('API 返回结果:', res);
         
         if (res.success) {
             const bookId = res.book_id;
             const bookName = res.book_name;
             const taskId = res.task_id;
+            const mode = res.mode || 'auto';
             
             // 设置当前书籍
-            currentBook = { id: bookId, name: bookName };
+            currentBook = { id: bookId, name: bookName, is_inspiration: inspirationMode };
             localStorage.setItem('lastBookId', bookId);
             
             // 显示写作页面
             hideWelcomeView();
             showWritingPage();
             
-            addSystemMessage(`📚 书籍 "${bookName}" 创建中，正在生成创作资料...`);
-            
-            // 启动轮询监控创建进度
-            if (taskId) {
-                startTaskPolling(taskId);
+            if (mode === 'inspiration') {
+                // 灵感对话模式
+                isInspirationMode = true;
+                currentInspirationBookId = bookId;
+                addSystemMessage(`💡 进入灵感对话模式，正在初始化...`);
+                await enterInspirationMode();
+                
+                // 显示加载动画
+                const loadingdots = ['.', '..', '...'];
+                let dotIdx = 0;
+                addSystemMessage(`⏳ 正在准备对话环境...`);
+                
+                // 更新加载消息的函数
+                const updateLoadingMsg = () => {
+                    dotIdx = (dotIdx + 1) % 3;
+                    const msgs = document.querySelectorAll('.message.system-message');
+                    const lastMsg = msgs[msgs.length - 1];
+                    if (lastMsg) {
+                        const content = lastMsg.querySelector('.message-content');
+                        if (content) content.textContent = `⏳ 正在准备对话环境${loadingdots[dotIdx]}`;
+                    }
+                };
+                
+                // 等待后台初始化完成（最多等待120秒，每3秒检查一次）
+                let retries = 40;
+                const pollInterval = 3000; // 3秒轮询一次
+                const dotInterval = setInterval(updateLoadingMsg, 300);
+                
+                while (retries-- > 0) {
+                    try {
+                        const statusRes = await api(`/api/books/${bookId}/inspiration`);
+                        console.log('轮询结果:', statusRes);
+                        if (statusRes.success) {
+                            const bookData = statusRes.book || {};
+                            const dialogue = bookData.dialogue || [];
+                            console.log('对话数据:', dialogue, '长度:', dialogue.length);
+                            if (dialogue && dialogue.length > 0) {
+                                clearInterval(dotInterval);
+                                await loadInspirationDialogue(bookId);
+                                return; // 成功返回
+                            } else {
+                                console.log('dialogue为空或未定义，继续等待...');
+                            }
+                        } else {
+                            console.log('API返回success=false:', statusRes.message);
+                        }
+                    } catch (e) {
+                        console.log('轮询请求失败:', e);
+                    }
+                    await new Promise(r => setTimeout(r, pollInterval));
+                }
+                
+                clearInterval(dotInterval);
+                addSystemMessage(`❌ 初始化超时，请刷新重试`);
+                addSystemMessage(`提示：如果LLM配置不正确，灵感模式可能无法正常工作`);
+            } else {
+                // 自动模式
+                isInspirationMode = false;
+                addSystemMessage(`📚 书籍 "${bookName}" 创建中，正在生成创作资料...`);
+                
+                // 启动轮询监控创建进度
+                if (taskId) {
+                    startTaskPolling(taskId);
+                }
             }
         } else {
             addSystemMessage(`❌ 创建失败: ${res.message}`);
@@ -2888,6 +3010,740 @@ async function createNewBook() {
     } catch (error) {
         console.error('创建书籍失败:', error);
         addSystemMessage(`❌ 创建失败: ${error.message || '未知错误'}`);
+    }
+}
+
+// 开始灵感对话模式（从书籍详情页进入）
+async function startInspirationMode() {
+    if (!currentBook) return;
+    
+    try {
+        // 先检查状态
+        const statusRes = await api(`/api/books/${currentBook.id}/inspiration-status`);
+        
+        if (!statusRes.can_enter && !statusRes.is_inspiration_mode) {
+            addSystemMessage(`❌ ${statusRes.reason || '无法进入灵感模式'}`);
+            return;
+        }
+        
+        // 如果不是灵感模式，先进入
+        if (!statusRes.is_inspiration_mode) {
+            const enterRes = await api(`/api/books/${currentBook.id}/inspiration/enter`, {
+                method: 'POST'
+            });
+            
+            if (!enterRes.success) {
+                addSystemMessage(`❌ ${enterRes.message || '进入灵感模式失败'}`);
+                return;
+            }
+            
+            currentBook.is_inspiration = true;
+        }
+        
+        // 设置状态并进入
+        isInspirationMode = true;
+        currentInspirationBookId = currentBook.id;
+        
+        addSystemMessage('💡 进入灵感对话模式...');
+        
+        // 显示写作页面并进入灵感模式
+        await enterInspirationMode();
+        
+        // 加载对话历史
+        await loadInspirationDialogue(currentBook.id);
+        
+    } catch (error) {
+        console.error('进入灵感模式失败:', error);
+        addSystemMessage(`❌ 进入灵感模式失败: ${error.message}`);
+    }
+}
+
+// 进入灵感对话模式（UI切换）
+async function enterInspirationMode() {
+    const writingPage = document.getElementById('writing-page');
+    if (!writingPage) return;
+
+    // 显示写作页面
+    writingPage.style.display = 'flex';
+
+    // 显示灵感模式顶部栏
+    const inspirationHeader = document.getElementById('inspiration-mode-header');
+    if (inspirationHeader) inspirationHeader.style.display = 'flex';
+
+    // 隐藏书籍信息区域，显示灵感进度面板
+    const bookInfoSection = document.getElementById('book-info-section');
+    const inspirationSection = document.getElementById('inspiration-info-section');
+
+    if (bookInfoSection) bookInfoSection.style.display = 'none';
+    if (inspirationSection) inspirationSection.style.display = 'block';
+
+    // 隐藏章节列表和工具栏，显示灵感对话区域
+    const chapterListSection = document.getElementById('chapter-list-section');
+    const chatInputArea = document.querySelector('.chat-input-area');
+    const chatToolbar = document.querySelector('.chat-toolbar');
+    const toolbarTabs = document.querySelector('.toolbar-tabs');
+
+    if (chapterListSection) chapterListSection.style.display = 'none';
+    if (chatInputArea) chatInputArea.style.display = 'flex';
+    if (chatToolbar) chatToolbar.style.display = 'none';
+    if (toolbarTabs) toolbarTabs.style.display = 'none';  // 隐藏撰写工具栏
+
+    // 添加灵感模式类名
+    writingPage.classList.add('inspiration-mode');
+}
+
+// 退出灵感对话模式
+async function exitInspirationMode() {
+    if (!currentBook) return;
+
+    // 确认操作
+    if (!confirm('退出灵感对话模式？\n已收集的创作信息会保留。')) {
+        return;
+    }
+
+    // 隐藏灵感模式顶部栏
+    const inspirationHeader = document.getElementById('inspiration-mode-header');
+    if (inspirationHeader) inspirationHeader.style.display = 'none';
+
+    // 显示书籍信息区域
+    const bookInfoSection = document.getElementById('book-info-section');
+    if (bookInfoSection) bookInfoSection.style.display = 'block';
+
+    // 隐藏灵感进度面板
+    const inspirationProgressPanel = document.getElementById('inspiration-progress-panel');
+    if (inspirationProgressPanel) inspirationProgressPanel.style.display = 'none';
+
+    // 显示章节列表
+    const chapterListSection = document.getElementById('chapter-list-section');
+    if (chapterListSection) chapterListSection.style.display = 'block';
+
+    // 隐藏灵感输入区域
+    const inspirationInputArea = document.getElementById('inspiration-input-area');
+    if (inspirationInputArea) {
+        inspirationInputArea.remove();
+    }
+
+    // 恢复原来的输入容器
+    const chatInputArea = document.querySelector('.chat-input-area');
+    const originalInput = chatInputArea?.querySelector('.chat-input-container');
+    if (originalInput) originalInput.style.display = 'flex';
+
+    // 恢复聊天工具栏
+    const chatToolbar = document.querySelector('.chat-toolbar');
+    if (chatToolbar) chatToolbar.style.display = 'flex';
+
+    // 恢复撰写工具栏
+    const toolbarTabs = document.querySelector('.toolbar-tabs');
+    if (toolbarTabs) toolbarTabs.style.display = 'block';
+
+    // 重置状态
+    isInspirationMode = false;
+    currentInspirationBookId = null;
+
+    // 移除灵感模式类名
+    const writingPage = document.getElementById('writing-page');
+    if (writingPage) writingPage.classList.remove('inspiration-mode');
+
+    // 清空聊天区并重新加载书籍聊天
+    const messagesContainer = document.getElementById('chat-messages');
+    if (messagesContainer) {
+        messagesContainer.innerHTML = '';
+    }
+
+    // 重新加载书籍信息
+    await loadChapterList();
+    await updateDocStatus();
+    await updateBookInfoSection();
+    await loadLatestChatLog();
+
+    addSystemMessage('已退出灵感对话模式');
+}
+
+// 加载灵感对话
+async function loadInspirationDialogue(bookId) {
+    try {
+        const res = await api(`/api/books/${bookId}/inspiration`);
+        
+        if (res.success) {
+            const bookData = res.book || {};
+            const dialogue = bookData.dialogue || [];
+            const collectedInfo = bookData.collected_info || {};
+            const missingFields = bookData.missing_fields || [];
+            
+            // 清空消息区域
+            const messagesContainer = document.getElementById('chat-messages');
+            if (messagesContainer) {
+                messagesContainer.innerHTML = '';
+                
+                // 渲染对话
+                if (dialogue.length > 0) {
+                    dialogue.forEach(msg => {
+                        const msgClass = msg.role === 'user' ? 'user-message' : 
+                                         msg.role === 'system' ? 'system-message' : 'ai-message';
+                        messagesContainer.innerHTML += `
+                            <div class="message ${msgClass}">
+                                <div class="message-content">${escapeHtml(msg.content)}</div>
+                            </div>
+                        `;
+                    });
+                } else {
+                    // 对话为空，显示默认欢迎消息
+                    messagesContainer.innerHTML = `
+                        <div class="message ai-message">
+                            <div class="message-content">👋 你好！欢迎来到灵感创作模式。
+
+请告诉我你的创作想法，比如：
+• 你想写什么类型的故事？
+• 主角有什么特点？
+• 故事背景是什么？
+
+我会通过问答帮助你完善创作构想。</div>
+                        </div>
+                    `;
+                }
+                
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            }
+            
+            // 更新进度显示
+            updateInspirationProgress(collectedInfo, missingFields);
+            
+            // 添加灵感模式输入区域（如果还没有）
+            const chatInputArea = document.querySelector('.chat-input-area');
+            console.log('[loadInspirationDialogue] chatInputArea:', chatInputArea);
+            console.log('[loadInspirationDialogue] 已有input-area:', !!document.getElementById('inspiration-input-area'));
+            
+            if (chatInputArea && !document.getElementById('inspiration-input-area')) {
+                console.log('[loadInspirationDialogue] 创建灵感输入区域');
+                
+                // 隐藏原来的输入容器
+                const originalInput = chatInputArea.querySelector('.chat-input-container');
+                if (originalInput) originalInput.style.display = 'none';
+                
+                // 创建灵感模式输入区域
+                const inspirationInput = document.createElement('div');
+                inspirationInput.id = 'inspiration-input-area';
+                inspirationInput.className = 'inspiration-input-container';
+                inspirationInput.innerHTML = `
+                    <div class="inspiration-input-wrapper">
+                        <textarea id="inspiration-input" placeholder="输入你的创作想法... (Ctrl+Enter 发送)" rows="2"></textarea>
+                        <button class="btn btn-primary btn-send" id="inspiration-send-btn" type="button">
+                            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                        </button>
+                    </div>
+                    <div class="inspiration-status" id="inspiration-status"></div>
+                    <div class="inspiration-actions">
+                        <button class="btn btn-warning" id="inspiration-action-btn" onclick="generateInspirationDocs()" style="display:none;" type="button">
+                            📋 生成设定文档
+                        </button>
+                        <button class="btn btn-secondary" id="auto-complete-btn" onclick="autoCompleteInspiration()" type="button">
+                            🤖 剩下交给你了
+                        </button>
+                        <button class="btn btn-primary" id="decide-for-me-btn" onclick="decideForMe()" type="button">
+                            🎲 由你决定
+                        </button>
+                    </div>
+                `;
+                chatInputArea.appendChild(inspirationInput);
+                
+                // 使用 addEventListener 绑定发送按钮事件
+                const sendBtn = document.getElementById('inspiration-send-btn');
+                if (sendBtn) {
+                    sendBtn.addEventListener('click', function() {
+                        console.log('[loadInspirationDialogue] 发送按钮被点击');
+                        sendInspirationChat();
+                    });
+                }
+                
+                // 添加快捷键支持
+                const inspirationTextarea = document.getElementById('inspiration-input');
+                if (inspirationTextarea) {
+                    inspirationTextarea.addEventListener('keydown', function(e) {
+                        if (e.ctrlKey && e.key === 'Enter') {
+                            e.preventDefault();
+                            console.log('[loadInspirationDialogue] Ctrl+Enter 触发');
+                            sendInspirationChat();
+                        }
+                    });
+                    inspirationTextarea.addEventListener('input', function() {
+                        this.style.height = 'auto';
+                        this.style.height = Math.min(this.scrollHeight, 150) + 'px';
+                    });
+                    // 让 textarea 获取焦点
+                    setTimeout(() => inspirationTextarea.focus(), 100);
+                }
+                
+                console.log('[loadInspirationDialogue] 灵感输入区域创建完成');
+            }
+        }
+    } catch (error) {
+        console.error('加载灵感对话失败:', error);
+    }
+}
+
+// 更新灵感进度显示
+function updateInspirationProgress(collectedInfo, missingFields) {
+    const progressPanel = document.getElementById('inspiration-progress-panel');
+    if (!progressPanel) return;
+    
+    const fields = [
+        { key: 'book_name', name: '书名' },
+        { key: 'genre', name: '题材' },
+        { key: 'platform', name: '平台' },
+        { key: 'words_per_chapter', name: '章节字数' },
+        { key: 'total_chapters', name: '总章节数' },
+        { key: 'background', name: '背景设定' },
+        { key: 'protagonist', name: '主角信息' }
+    ];
+    
+    let html = '<div class="inspiration-field-list">';
+    fields.forEach(f => {
+        const value = collectedInfo[f.key] || '';
+        const isFilled = !!value;
+        const isMissing = missingFields.some(m => m.field === f.key);
+        
+        html += `
+            <div class="inspiration-field-item ${isFilled ? 'filled' : 'missing'}">
+                <span class="inspiration-field-label">${f.name}</span>
+                <span class="inspiration-field-value">${isFilled ? escapeHtml(String(value).substring(0, 20)) : '未填写'}</span>
+            </div>
+        `;
+    });
+    html += '</div>';
+    
+    progressPanel.innerHTML = html;
+}
+
+// 简单的Markdown转HTML函数
+function simpleMarkdownToHtml(text) {
+    if (!text) return '';
+    return text
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\n/g, '<br>');
+}
+
+// 发送灵感对话消息
+async function sendInspirationChat() {
+    console.log('[sendInspirationChat] 开始执行');
+    
+    const input = document.getElementById('inspiration-input');
+    const message = input ? input.value.trim() : '';
+    
+    console.log('[sendInspirationChat] message:', message);
+    console.log('[sendInspirationChat] currentInspirationBookId:', currentInspirationBookId);
+    
+    if (!message) {
+        console.log('[sendInspirationChat] 消息为空，忽略');
+        return;
+    }
+    
+    if (!currentInspirationBookId) {
+        console.log('[sendInspirationChat] 书籍ID为空，忽略');
+        alert('错误：未找到灵感模式书籍，请重新进入灵感模式');
+        return;
+    }
+    
+    input.value = '';
+    input.style.height = 'auto';
+
+    // 禁用输入框和发送按钮
+    input.disabled = true;
+    const sendBtn = document.getElementById('inspiration-send-btn');
+    if (sendBtn) sendBtn.disabled = true;
+
+    const statusEl = document.getElementById('inspiration-status');
+    if (statusEl) {
+        statusEl.innerHTML = '<img src="/static/images/loading.gif" alt="loading" class="loading-inline"> AI正在思考...';
+        statusEl.className = 'inspiration-status running';
+    }
+
+    // 添加用户消息
+    const messagesContainer = document.getElementById('chat-messages');
+    messagesContainer.innerHTML += `
+        <div class="message user-message">
+            <div class="message-content">${escapeHtml(message)}</div>
+        </div>
+    `;
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    
+    try {
+        console.log('[sendInspirationChat] 发送API请求...');
+        const res = await api(`/api/books/${currentInspirationBookId}/inspiration/chat`, {
+            method: 'POST',
+            body: { message }
+        });
+        
+        console.log('[sendInspirationChat] API返回:', res);
+        
+        if (statusEl) {
+            statusEl.textContent = '';
+            statusEl.className = 'inspiration-status';
+        }
+        
+        if (res.success) {
+            // 添加保存状态提示
+            let saveStatus = '';
+            if (res.save_success) {
+                saveStatus = '<div class="save-status">💾 信息已保存</div>';
+            }
+
+            // 添加AI回复
+            messagesContainer.innerHTML += `
+                <div class="message ai-message">
+                    <div class="message-content">${simpleMarkdownToHtml(res.response)}${saveStatus}</div>
+                </div>
+            `;
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+            // 更新进度
+            updateInspirationProgress(res.collected_info || {}, res.missing_fields || []);
+
+            // 如果可以生成文档，显示按钮
+            const actionBtn = document.getElementById('inspiration-action-btn');
+            if (actionBtn && res.can_generate) {
+                actionBtn.style.display = 'inline-block';
+            }
+        } else {
+            alert('发送失败：' + (res.message || '未知错误'));
+        }
+    } catch (error) {
+        if (statusEl) {
+            statusEl.textContent = '发送失败';
+            statusEl.className = 'inspiration-status';
+        }
+        console.error('发送灵感消息失败:', error);
+        alert('发送失败：' + error.message);
+    } finally {
+        // 恢复输入框和发送按钮
+        input.disabled = false;
+        if (sendBtn) sendBtn.disabled = false;
+        input.focus();
+    }
+}
+
+// 由你决定 - 快速提交特殊指令
+function decideForMe() {
+    const input = document.getElementById('inspiration-input');
+    const decideBtn = document.getElementById('decide-for-me-btn');
+    if (!input || !decideBtn) return;
+    
+    // 状态跟随发送按钮
+    const sendBtn = document.getElementById('inspiration-send-btn');
+    const isDisabled = sendBtn ? sendBtn.disabled : false;
+    
+    // 禁用按钮防止重复点击
+    decideBtn.disabled = true;
+    if (sendBtn) sendBtn.disabled = true;
+    
+    // 在输入框填入"由你决定"
+    input.value = '由你决定';
+    
+    // 自动提交
+    sendInspirationChat().finally(() => {
+        // 恢复按钮状态
+        decideBtn.disabled = isDisabled;
+        if (sendBtn) sendBtn.disabled = isDisabled;
+    });
+}
+
+// 自动补全灵感信息
+async function autoCompleteInspiration() {
+    if (!currentInspirationBookId) return;
+
+    // 禁用输入框和按钮
+    const input = document.getElementById('inspiration-input');
+    const sendBtn = document.getElementById('inspiration-send-btn');
+    const autoBtn = document.getElementById('auto-complete-btn');
+    if (input) input.disabled = true;
+    if (sendBtn) sendBtn.disabled = true;
+    if (autoBtn) autoBtn.disabled = true;
+
+    const statusEl = document.getElementById('inspiration-status');
+    if (statusEl) {
+        statusEl.innerHTML = '<img src="/static/images/loading.gif" alt="loading" class="loading-inline"> 正在自动补全...';
+        statusEl.className = 'inspiration-status running';
+    }
+
+    const messagesContainer = document.getElementById('chat-messages');
+    messagesContainer.innerHTML += `
+        <div class="message system-message">
+            <div class="message-content">🤖 系统正在自动补全缺失信息...</div>
+        </div>
+    `;
+
+    try {
+        const res = await api(`/api/books/${currentInspirationBookId}/inspiration/auto-complete`, {
+            method: 'POST'
+        });
+
+        if (statusEl) {
+            statusEl.textContent = '';
+            statusEl.className = 'inspiration-status';
+        }
+
+        if (res.success) {
+            messagesContainer.innerHTML += `
+                <div class="message system-message">
+                    <div class="message-content">✅ ${res.message || '信息已自动补全'}</div>
+                </div>
+            `;
+
+            updateInspirationProgress(res.collected_info || {}, []);
+
+            // 如果可以生成，显示按钮
+            const actionBtn = document.getElementById('inspiration-action-btn');
+            if (actionBtn) actionBtn.style.display = 'inline-block';
+        } else {
+            messagesContainer.innerHTML += `
+                <div class="message system-message">
+                    <div class="message-content">❌ ${res.message || '自动补全失败'}</div>
+                </div>
+            `;
+        }
+
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    } catch (error) {
+        if (statusEl) {
+            statusEl.textContent = '自动补全失败';
+            statusEl.className = 'inspiration-status';
+        }
+        console.error('自动补全失败:', error);
+    } finally {
+        // 恢复输入框和按钮
+        if (input) input.disabled = false;
+        if (sendBtn) sendBtn.disabled = false;
+        if (autoBtn) autoBtn.disabled = false;
+        if (input) input.focus();
+    }
+}
+
+// 生成设定文档
+async function generateInspirationDocs() {
+    if (!currentInspirationBookId) return;
+
+    // 禁用所有灵感模式按钮
+    const input = document.getElementById('inspiration-input');
+    const sendBtn = document.getElementById('inspiration-send-btn');
+    const autoBtn = document.getElementById('auto-complete-btn');
+    const actionBtn = document.getElementById('inspiration-action-btn');
+    const decideBtn = document.getElementById('decide-for-me-btn');
+    if (input) input.disabled = true;
+    if (sendBtn) sendBtn.disabled = true;
+    if (autoBtn) autoBtn.disabled = true;
+    if (actionBtn) actionBtn.disabled = true;
+    if (decideBtn) decideBtn.disabled = true;
+
+    const statusEl = document.getElementById('inspiration-status');
+    if (statusEl) {
+        statusEl.innerHTML = '<img src="/static/images/loading.gif" alt="loading" class="loading-inline"> 正在生成设定文档...';
+        statusEl.className = 'inspiration-status running';
+    }
+
+    addSystemMessage('💡 开始生成设定文档，将对每个文档进行评审修订...');
+
+    try {
+        const res = await api(`/api/books/${currentInspirationBookId}/inspiration/generate-docs`, {
+            method: 'POST'
+        });
+
+        if (res.success && res.task_id) {
+            // 重置进度跟踪变量
+            lastProgress = 0;
+            lastStep = '';
+            completedSteps = [];
+
+            // 启动轮询显示进度
+            startInspirationGeneratePolling(res.task_id);
+        } else {
+            // 恢复按钮
+            if (input) input.disabled = false;
+            if (sendBtn) sendBtn.disabled = false;
+            if (autoBtn) autoBtn.disabled = false;
+            if (actionBtn) actionBtn.disabled = false;
+            if (decideBtn) decideBtn.disabled = false;
+            
+            if (statusEl) {
+                statusEl.textContent = '';
+                statusEl.className = 'inspiration-status';
+            }
+            
+            addSystemMessage(`❌ 生成失败: ${res.message}`);
+        }
+    } catch (error) {
+        if (statusEl) statusEl.textContent = '生成失败';
+        console.error('生成设定文档失败:', error);
+        // 恢复按钮
+        if (input) input.disabled = false;
+        if (sendBtn) sendBtn.disabled = false;
+        if (autoBtn) autoBtn.disabled = false;
+        if (actionBtn) actionBtn.disabled = false;
+        if (decideBtn) decideBtn.disabled = false;
+    }
+}
+
+// 灵感模式生成文档的任务轮询
+let inspirationGenerateTaskId = null;
+let inspirationGeneratePollInterval = null;
+
+function startInspirationGeneratePolling(taskId) {
+    stopInspirationGeneratePolling();
+    inspirationGenerateTaskId = taskId;
+    inspirationGeneratePollInterval = setInterval(() => pollInspirationGenerateStatus(taskId), 2000);
+    addSystemMessage(`🔄 正在生成设定文档 (ID: ${taskId})...`);
+}
+
+function stopInspirationGeneratePolling() {
+    if (inspirationGeneratePollInterval) {
+        clearInterval(inspirationGeneratePollInterval);
+        inspirationGeneratePollInterval = null;
+    }
+    inspirationGenerateTaskId = null;
+}
+
+async function pollInspirationGenerateStatus(taskId) {
+    if (!taskId) return;
+
+    try {
+        const res = await api(`/api/tasks/${taskId}`);
+        if (!res.success) {
+            stopInspirationGeneratePolling();
+            return;
+        }
+
+        const task = res.task;
+        const statusEl = document.getElementById('inspiration-status');
+
+        // 更新进度显示
+        if (task.progress !== undefined) {
+            const message = task.message || '正在生成...';
+            if (statusEl) {
+                statusEl.innerHTML = `<img src="/static/images/loading.gif" alt="loading" class="loading-inline"> ${message} (${task.progress}%)`;
+                statusEl.className = 'inspiration-status running';
+            }
+            updateChatStatus(message);
+            
+            // 显示步骤进度
+            if (task.step && task.step !== lastStep) {
+                addSystemMessage(`📝 ${task.step}: ${message}`);
+            }
+        }
+
+        // 任务完成
+        if (task.status === 'success') {
+            stopInspirationGeneratePolling();
+            
+            if (statusEl) {
+                statusEl.textContent = '✅ 生成完成';
+                statusEl.className = 'inspiration-status';
+            }
+            updateChatStatus('');
+
+            // 显示评审报告
+            const result = task.result || {};
+            const auditResult = result.audit || result.audit_result || {};
+            
+            addSystemMessage('✅ 设定文档生成完成！');
+            
+            if (auditResult.story_bible_score || auditResult.book_rules_score) {
+                const sbScore = auditResult.story_bible_score || 0;
+                const brScore = auditResult.book_rules_score || 0;
+                const avgScore = Math.round((sbScore + brScore) / 2);
+                const usedBestCandidate = auditResult.used_best_candidate || {};
+                const sbCandidates = auditResult.story_bible_candidates || [];
+                const brCandidates = auditResult.book_rules_candidates || [];
+                
+                addSystemMessage(`📊 **评审报告**`);
+                
+                // 显示世界观候选
+                if (sbCandidates.length > 0) {
+                    const sbCandidatesInfo = sbCandidates.map((c, i) => `${i + 1}次:${c.score}分`).join(' → ');
+                    const sbUsedBest = usedBestCandidate.story_bible ? ' (采用最佳)' : '';
+                    addSystemMessage(`   - 世界观: ${sbCandidatesInfo}${sbUsedBest}`);
+                }
+                
+                // 显示规则候选
+                if (brCandidates.length > 0) {
+                    const brCandidatesInfo = brCandidates.map((c, i) => `${i + 1}次:${c.score}分`).join(' → ');
+                    const brUsedBest = usedBestCandidate.book_rules ? ' (采用最佳)' : '';
+                    addSystemMessage(`   - 规则: ${brCandidatesInfo}${brUsedBest}`);
+                }
+                
+                addSystemMessage(`   - 最终评分: 世界观${sbScore}分 / 规则${brScore}分`);
+                
+                if (avgScore >= 85) {
+                    addSystemMessage(`🎉 恭喜！设定文档已通过评审！`);
+                } else {
+                    addSystemMessage(`💡 已采用最佳候选版本，建议进入设定管理查看并优化。`);
+                }
+            }
+
+            addSystemMessage('💡 灵感对话已保留在上方，你可以继续创作或回顾对话历史。');
+
+            // 保存当前的inspirationBookId用于后续处理
+            const savedBookId = currentInspirationBookId;
+
+            // 切换到普通模式
+            isInspirationMode = false;
+            currentInspirationBookId = null;
+
+            // 隐藏灵感模式头部和进度面板
+            const inspirationHeader = document.getElementById('inspiration-mode-header');
+            const progressPanel = document.getElementById('inspiration-progress-panel');
+            const toolbarTabs = document.querySelector('.toolbar-tabs');
+            if (inspirationHeader) inspirationHeader.style.display = 'none';
+            if (progressPanel) progressPanel.style.display = 'none';
+            if (toolbarTabs) toolbarTabs.style.display = 'block';
+
+            // 移除灵感模式类名
+            const writingPage = document.getElementById('writing-page');
+            if (writingPage) writingPage.classList.remove('inspiration-mode');
+
+            // 清理灵感输入区域
+            const chatInputArea = document.querySelector('.chat-input-area');
+            const inspirationInputArea = document.getElementById('inspiration-input-area');
+            if (inspirationInputArea) {
+                inspirationInputArea.remove();
+            }
+            // 恢复原来的输入容器
+            const originalInput = chatInputArea?.querySelector('.chat-input-container');
+            if (originalInput) originalInput.style.display = 'flex';
+
+            // 显示章节列表
+            const chapterListSection = document.getElementById('chapter-list-section');
+            if (chapterListSection) chapterListSection.style.display = 'block';
+
+            // 更新书籍信息区域（显示灵感入口）
+            await updateBookInfoSection();
+            
+            // 刷新章节列表以显示新生成的文档
+            await loadChapterList();
+            await updateDocStatus();
+
+        } else if (task.status === 'failed') {
+            stopInspirationGeneratePolling();
+            
+            if (statusEl) {
+                statusEl.textContent = '❌ 生成失败';
+                statusEl.className = 'inspiration-status';
+            }
+            updateChatStatus('');
+            
+            addSystemMessage(`❌ 生成失败: ${task.message || '未知错误'}`);
+
+            // 恢复按钮
+            const input = document.getElementById('inspiration-input');
+            const sendBtn = document.getElementById('inspiration-send-btn');
+            const autoBtn = document.getElementById('auto-complete-btn');
+            const actionBtn = document.getElementById('inspiration-action-btn');
+            const decideBtn = document.getElementById('decide-for-me-btn');
+            if (input) input.disabled = false;
+            if (sendBtn) sendBtn.disabled = false;
+            if (autoBtn) autoBtn.disabled = false;
+            if (actionBtn) actionBtn.disabled = false;
+            if (decideBtn) decideBtn.disabled = false;
+        }
+    } catch (error) {
+        console.error('轮询状态失败:', error);
     }
 }
 

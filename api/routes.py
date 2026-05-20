@@ -57,11 +57,12 @@ async def list_books():
 
 class CreateBookRequest(BaseModel):
     brief: str = ""
+    inspiration_mode: bool = False  # 是否使用灵感对话模式
 
 
 @router.post("/books")
 async def create_book(data: CreateBookRequest):
-    """创建新书 - 异步执行工作流"""
+    """创建新书 - 根据模式选择执行流程"""
     if not data.brief:
         raise HTTPException(status_code=400, detail="请提供创作简报")
     
@@ -74,34 +75,203 @@ async def create_book(data: CreateBookRequest):
     book_name = temp_name if temp_name else "新书"
     book_id = engine._generate_book_id()
     
-    # 创建任务并异步执行工作流
-    task = task_manager.create_task(f"创建新书 {book_name}", book_id=book_id, task_type="create_book")
+    if data.inspiration_mode:
+        # 灵感对话模式：创建书籍记录，进入对话流程
+        task = task_manager.create_task(f"灵感创作 {book_name}", book_id=book_id, task_type="inspiration_chat")
+        
+        def run_inspiration():
+            import time
+            import threading
+            print(f"[灵感线程 {threading.current_thread().name}] 开始执行，book_id={book_id}")
+            try:
+                task_manager.update_task(task.id, status=TaskStatus.RUNNING, progress=0, 
+                    message="初始化灵感模式...", step="灵感对话")
+                
+                # 初始化灵感书籍
+                print(f"[灵感线程] 调用 init_inspiration_book...")
+                result = engine.init_inspiration_book(book_id, book_name, data.brief)
+                print(f"[灵感线程] init_inspiration_book 返回: {result}")
+                
+                # 保存完成后等待，确保数据已完全写入磁盘
+                # 由于是异步操作，需要给文件写入足够的时间
+                time.sleep(1.0)
+                
+                if result.get('success'):
+                    task_manager.update_task(task.id, status=TaskStatus.SUCCESS,
+                        progress=100, message="灵感书籍已创建", result=result)
+                    print(f"[灵感线程] 书籍创建成功!")
+                else:
+                    task_manager.update_task(task.id, status=TaskStatus.FAILED,
+                        message=f"创建失败: {result.get('message', '')}")
+                    print(f"[灵感线程] 书籍创建失败: {result.get('message', '')}")
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"[灵感线程] 异常: {str(e)}")
+                task_manager.update_task(task.id, status=TaskStatus.FAILED, message=f"错误: {str(e)}")
+        
+        import threading
+        t = threading.Thread(target=run_inspiration, daemon=True)
+        t.start()
+        print(f"[主线程] 灵感线程已启动: {t.name}")
+        
+        return {
+            "success": True,
+            "task_id": task.id,
+            "book_id": book_id,
+            "book_name": book_name,
+            "mode": "inspiration",
+            "message": "进入灵感对话模式..."
+        }
+    else:
+        # 自动模式：执行带进度回调的工作流
+        task = task_manager.create_task(f"创建新书 {book_name}", book_id=book_id, task_type="create_book")
+        
+        def run():
+            try:
+                task_manager.update_task(task.id, status=TaskStatus.RUNNING, progress=0, message="开始创建...")
+                
+                def progress_callback(step, progress, message):
+                    task_manager.update_task(
+                        task.id,
+                        step=step,
+                        progress=progress,
+                        message=message
+                    )
+                
+                result = engine.create_book_workflow_with_progress(
+                    data.brief, book_id, progress_callback
+                )
+                
+                if result.get('success'):
+                    task_manager.update_task(task.id, status=TaskStatus.SUCCESS,
+                        progress=100, message="创建完成", result=result)
+                else:
+                    task_manager.update_task(task.id, status=TaskStatus.FAILED,
+                        message=f"创建失败: {result.get('message', '')}")
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                task_manager.update_task(task.id, status=TaskStatus.FAILED, message=f"错误: {str(e)}")
+        
+        import threading
+        threading.Thread(target=run, daemon=True).start()
+        
+        return {
+            "success": True,
+            "task_id": task.id,
+            "book_id": book_id,
+            "book_name": book_name,
+            "mode": "auto",
+            "message": "书籍创建中..."
+        }
+
+
+# ============== 灵感对话模式 API ==============
+
+class InspirationMessageRequest(BaseModel):
+    message: str = ""
+
+
+@router.get("/books/{book_id}/inspiration-status")
+async def get_inspiration_status(book_id: str):
+    """获取灵感模式状态 - 检查是否可以进入灵感模式"""
+    result = engine.get_inspiration_status(book_id)
+    return result
+
+
+@router.post("/books/{book_id}/inspiration/enter")
+async def enter_inspiration(book_id: str):
+    """重新进入灵感对话模式"""
+    result = engine.enter_inspiration_mode(book_id)
+    return result
+
+
+@router.get("/books/{book_id}/inspiration")
+async def get_inspiration_info(book_id: str):
+    """获取灵感书籍的详细信息"""
+    result = engine.get_inspiration_info(book_id)
+    return result
+
+
+@router.post("/books/{book_id}/inspiration/chat")
+async def chat_inspiration(book_id: str, request: Request):
+    """发送灵感对话消息"""
+    try:
+        data = await request.json()
+        user_message = data.get('message', '').strip()
+        
+        if not user_message:
+            raise HTTPException(status_code=400, detail="消息不能为空")
+        
+        result = engine.chat_inspiration(book_id, user_message)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/books/{book_id}/inspiration/auto-complete")
+async def auto_complete_inspiration(book_id: str):
+    """自动补全灵感信息"""
+    result = engine.auto_complete_inspiration(book_id)
+    return result
+
+
+@router.post("/books/{book_id}/inspiration/generate-docs")
+async def generate_inspiration_docs(book_id: str):
+    """生成设定文档（灵感模式完成后）"""
+    book = engine.sm.get_book_by_id(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="书籍不存在")
+    
+    # 创建任务
+    task = task_manager.create_task(f"生成设定文档 {book.name}", book_id=book_id, task_type="inspiration_generate")
     
     def run():
         try:
-            # 更新状态为运行中
-            task_manager.update_task(task.id, status=TaskStatus.RUNNING, progress=0, message="开始创建...")
+            task_manager.update_task(task.id, status=TaskStatus.RUNNING, progress=0, message="开始生成...")
+            
+            collected = getattr(book, 'inspiration_collected_info', {})
+            
+            # 构建规划数据
+            planning = {
+                'genre': collected.get('genre', '都市'),
+                'platform': collected.get('platform', '番茄小说'),
+                'words_per_chapter': collected.get('words_per_chapter', 3000),
+                'estimated_chapters': collected.get('total_chapters', 80),
+            }
             
             # 使用带进度回调的工作流
             def progress_callback(step, progress, message):
-                task_manager.update_task(
-                    task.id,
-                    step=step,
-                    progress=progress,
-                    message=message
-                )
+                task_manager.update_task(task.id, step=step, progress=progress, message=message)
             
-            # 执行带进度的创建流程（内部会创建书籍记录）
+            # 执行创建流程
             result = engine.create_book_workflow_with_progress(
-                data.brief, book_id, progress_callback
+                f"书名：{collected.get('book_name', book.name)}\n" +
+                f"题材：{planning['genre']}\n" +
+                f"平台：{planning['platform']}\n" +
+                f"章节字数：{planning['words_per_chapter']}\n" +
+                f"总章节数：{planning['estimated_chapters']}\n" +
+                f"背景设定：{collected.get('background', '')}\n" +
+                f"主角信息：{collected.get('protagonist', '')}",
+                book_id,
+                progress_callback
             )
             
             if result.get('success'):
+                # 标记书籍不再是灵感模式
+                book.is_inspiration = False
+                engine.save_book_meta(book)
+                
                 task_manager.update_task(task.id, status=TaskStatus.SUCCESS,
-                    progress=100, message="创建完成", result=result)
+                    progress=100, message="生成完成", result=result)
             else:
                 task_manager.update_task(task.id, status=TaskStatus.FAILED,
-                    message=f"创建失败: {result.get('message', '')}")
+                    message=f"生成失败: {result.get('message', '')}")
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -113,9 +283,7 @@ async def create_book(data: CreateBookRequest):
     return {
         "success": True,
         "task_id": task.id,
-        "book_id": book_id,
-        "book_name": book_name,
-        "message": "书籍创建中..."
+        "message": "正在生成设定文档..."
     }
 
 

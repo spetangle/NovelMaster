@@ -379,6 +379,7 @@ class BookInfo:
     completed_chapters: int = 0
     status: str = "进行中"
     created_at: str = ""
+    is_inspiration: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -391,7 +392,8 @@ class BookInfo:
             "total_chapters": self.total_chapters,
             "completed_chapters": self.completed_chapters,
             "status": self.status,
-            "created_at": self.created_at
+            "created_at": self.created_at,
+            "is_inspiration": self.is_inspiration
         }
 
     @classmethod
@@ -406,7 +408,8 @@ class BookInfo:
             total_chapters=data.get("total_chapters", 80),
             completed_chapters=data.get("completed_chapters", 0),
             status=data.get("status", "进行中"),
-            created_at=data.get("created_at", "")
+            created_at=data.get("created_at", ""),
+            is_inspiration=data.get("is_inspiration", False)
         )
 
 

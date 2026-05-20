@@ -103,6 +103,32 @@
                                     <span class="book-info-label">计划章节</span>
                                     <span class="book-info-value" id="book-info-chapters">-</span>
                                 </div>
+                                <!-- 灵感对话入口 -->
+                                <div class="book-info-item inspiration-entry-item" id="inspiration-entry-wrapper" style="display: none;">
+                                    <span class="book-info-label">灵感</span>
+                                    <span class="book-info-action" id="inspiration-entry" onclick="startInspirationMode()" style="cursor: pointer; color: var(--primary);">💡 灵感对话</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 灵感模式顶部栏 -->
+                        <div class="inspiration-mode-header" id="inspiration-mode-header" style="display: none;">
+                            <div class="inspiration-mode-title">
+                                <span class="inspiration-icon">💡</span>
+                                <span>灵感对话模式</span>
+                            </div>
+                            <button class="btn btn-sm btn-secondary inspiration-exit-btn" onclick="exitInspirationMode()">
+                                退出
+                            </button>
+                        </div>
+
+                        <!-- 灵感进度面板 -->
+                        <div class="sidebar-section" id="inspiration-progress-panel" style="display: none;">
+                            <div class="inspiration-progress-header">
+                                📋 收集进度
+                            </div>
+                            <div class="inspiration-field-list" id="inspiration-field-list">
+                                <!-- 动态加载 -->
                             </div>
                         </div>
 
@@ -244,12 +270,19 @@
                 <div class="modal-body">
                     <div class="form-group">
                         <label>创作简报</label>
-                        <textarea id="new-book-brief" rows="10" placeholder="描述你的创作构想...
+                        <textarea id="new-book-brief" rows="8" placeholder="描述你的创作构想...
 
 例如：
 - 都市玄幻小说，主角获得上古传承
 - 修仙世界，废材逆袭成为一代仙帝
 - 现代都市，商业天才的崛起之路"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="inspiration-mode-checkbox">
+                            <span>💡 灵感对话模式</span>
+                        </label>
+                        <p class="form-hint">勾选后，系统将通过多轮对话引导你完善创作设定；不勾选则自动生成设定文档。</p>
                     </div>
                 </div>
                 <div class="modal-footer">

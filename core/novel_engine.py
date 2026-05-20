@@ -27,8 +27,17 @@ class FileManager:
         if not path.exists():
             return {}
         import time
+        import os
         for attempt in range(max_retries):
             try:
+                # 先清空文件缓冲区，确保读取最新数据
+                if attempt == 0:
+                    try:
+                        with open(path, 'rb') as f:
+                            f.flush()
+                            os.fsync(f.fileno())
+                    except:
+                        pass
                 with open(path, 'r', encoding='utf-8') as f:
                     return json.load(f)
             except json.JSONDecodeError:
@@ -39,24 +48,21 @@ class FileManager:
         return {}
 
     def write_json(self, path: Path, data: dict) -> bool:
-        """写入JSON文件（原子写入，防止部分写入导致文件损坏）"""
-        import tempfile
+        """写入JSON文件"""
         import os
+        import traceback
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            # 先写入临时文件
-            fd, tmp_path = tempfile.mkstemp(suffix='.json', dir=str(path.parent), text=True)
-            try:
-                with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                # 原子替换
-                os.replace(tmp_path, path)
-            except Exception:
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-                raise
+            # 直接写入文件
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            print(f"[write_json] 写入成功: {path}")
             return True
-        except Exception:
+        except Exception as e:
+            print(f"[write_json] 写入JSON失败: {e}")
+            traceback.print_exc()
             return False
 
     def read_text(self, path: Path) -> str:
@@ -86,6 +92,8 @@ class StateManager:
         self.fm = FileManager(workspace)
         self.workspace = Path(workspace)
         self.book_index = self._load_book_index()
+        import threading
+        self._lock = threading.Lock()  # 线程锁，保护 book_index 的并发访问
 
     def _load_book_index(self) -> dict:
         """加载书籍索引"""
@@ -110,19 +118,24 @@ class StateManager:
 
     def get_book_by_id(self, book_id: str) -> Optional[BookInfo]:
         """通过ID获取书籍"""
-        for book in self.book_index.get("books", []):
-            if book.get("id") == book_id:
-                return BookInfo.from_dict(book)
-        return None
+        with self._lock:
+            for book in self.book_index.get("books", []):
+                if book.get("id") == book_id:
+                    return BookInfo.from_dict(book)
+            # 只在没有找到时打印日志，避免日志过多
+            all_ids = [b.get("id") for b in self.book_index.get("books", [])]
+            print(f"[get_book_by_id] 未找到 {book_id}，当前列表: {all_ids}")
+            return None
 
     def get_book_by_name(self, name: str) -> Optional[BookInfo]:
         """通过名称匹配书籍"""
         name_lower = name.lower()
-        for book in self.book_index.get("books", []):
-            book_name = book.get("name", "").lower()
-            if name_lower == book_name or name_lower in book_name or book_name in name_lower:
-                return BookInfo.from_dict(book)
-        return None
+        with self._lock:
+            for book in self.book_index.get("books", []):
+                book_name = book.get("name", "").lower()
+                if name_lower == book_name or name_lower in book_name or book_name in name_lower:
+                    return BookInfo.from_dict(book)
+            return None
 
     def get_all_books(self) -> List[BookInfo]:
         """获取所有书籍"""
@@ -144,22 +157,34 @@ class StateManager:
 
     def create_book(self, book_info: BookInfo) -> tuple[bool, str]:
         """创建新书籍"""
-        for book in self.book_index.get("books", []):
-            if book["id"] == book_info.id:
-                return False, f"书籍ID {book_info.id} 已存在"
-
-        self.book_index["books"].append(book_info.to_dict())
-        self.book_index["current_novel"] = book_info.id
-        self.book_index["last_updated"] = datetime.now().isoformat()
-
-        # 创建目录结构
+        import threading
+        print(f"[create_book {threading.current_thread().name}] 开始创建书籍: {book_info.id}, {book_info.name}")
+        
+        # 创建目录结构（不需要锁，目录创建是独立的）
         book_path = self.workspace / book_info.path
         for d in ["chapters", "truth_files", "planning_files"]:
             (book_path / d).mkdir(parents=True, exist_ok=True)
+        
+        with self._lock:
+            # 检查ID是否存在
+            for book in self.book_index.get("books", []):
+                if book["id"] == book_info.id:
+                    print(f"[create_book] 书籍ID已存在: {book_info.id}")
+                    return False, f"书籍ID {book_info.id} 已存在"
 
-        if self._save_book_index():
-            return True, f"书籍《{book_info.name}》创建成功"
-        return False, "状态文件保存失败"
+            book_dict = book_info.to_dict()
+            print(f"[create_book] 书籍数据: {book_dict}")
+            self.book_index["books"].append(book_dict)
+            self.book_index["current_novel"] = book_info.id
+            self.book_index["last_updated"] = datetime.now().isoformat()
+            print(f"[create_book] 已添加到 book_index，当前书籍列表: {[b.get('id') for b in self.book_index.get('books', [])]}")
+
+            # 在锁内保存，确保原子性
+            if self._save_book_index():
+                print(f"[create_book] 保存成功!")
+                return True, f"书籍《{book_info.name}》创建成功"
+            print(f"[create_book] 保存失败!")
+            return False, "状态文件保存失败"
 
     def load_project_state(self, book: BookInfo) -> dict:
         """加载项目状态"""
@@ -230,6 +255,52 @@ class NovelEngine:
         
         # 初始化 Agent 相关组件
         self._init_agents()
+
+    def save_book_meta(self, book: 'BookInfo') -> bool:
+        """保存书籍元数据（包括灵感对话）"""
+        try:
+            with self.sm._lock:
+                # 在 book_index 中找到该书籍并更新
+                for b in self.sm.book_index.get("books", []):
+                    if b.get("id") == book.id:
+                        # 更新基本字段
+                        b["name"] = book.name
+                        b["is_inspiration"] = getattr(book, 'is_inspiration', False)
+                        # 保存灵感相关字段
+                        b["inspiration_collected_info"] = getattr(book, 'inspiration_collected_info', {})
+                        b["inspiration_dialogue"] = getattr(book, 'inspiration_dialogue', [])
+                        print(f"[save_book_meta] 已更新书籍 {book.id} 的元数据")
+                        # 在锁内保存，确保原子性
+                        return self.sm._save_book_index()
+                print(f"[save_book_meta] 未找到书籍 {book.id}，无法保存")
+                return False
+        except Exception as e:
+            print(f"保存书籍元数据失败: {e}")
+            return False
+
+    def _save_inspiration_to_chatlog(self, book: 'BookInfo', dialogue: list):
+        """将灵感对话保存到 chatlog 文件"""
+        try:
+            import json
+            chat_logs_dir = self.workspace / book.path / "chat_logs"
+            chat_logs_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 保存灵感对话（使用特殊文件名标记）
+            log_file = chat_logs_dir / "inspiration_dialogue.json"
+            
+            log_data = {
+                "type": "inspiration",
+                "book_id": book.id,
+                "book_name": book.name,
+                "export_time": datetime.now().isoformat(),
+                "collected_info": getattr(book, 'inspiration_collected_info', {}),
+                "messages": dialogue
+            }
+            
+            log_file.write_text(json.dumps(log_data, ensure_ascii=False, indent=2), encoding='utf-8')
+            print(f"灵感对话已保存到 {log_file}")
+        except Exception as e:
+            print(f"保存灵感对话到chatlog失败: {e}")
     
     def _init_agents(self):
         """初始化 Agent 组件"""
@@ -407,10 +478,16 @@ class NovelEngine:
             report("生成世界观", 35, "正在创建世界观设定...")
             story_bible = self._generate_story_bible(book, planning, characters)
 
-            # 4.1 评审世界观（85分以下重试，最多3次）
+            # 4.1 评审世界观（85分以下重试，最多3次），收集所有候选
             report("评审世界观", 40, "正在评审世界观设定...")
             story_bible_score, story_bible_issues = self._audit_setting_document(
                 story_bible, "世界观设定", book)
+            
+            # 收集所有候选结果
+            story_bible_candidates = [(story_bible, story_bible_score, story_bible_issues)]
+            best_story_bible = story_bible
+            best_story_bible_score = story_bible_score
+            best_story_bible_issues = story_bible_issues
             
             for retry in range(3):
                 if story_bible_score >= 85:
@@ -420,17 +497,36 @@ class NovelEngine:
                 story_bible = self._generate_story_bible(book, planning, characters, feedback)
                 story_bible_score, story_bible_issues = self._audit_setting_document(
                     story_bible, "世界观设定", book)
+                # 收集候选
+                story_bible_candidates.append((story_bible, story_bible_score, story_bible_issues))
+                if story_bible_score > best_story_bible_score:
+                    best_story_bible = story_bible
+                    best_story_bible_score = story_bible_score
+                    best_story_bible_issues = story_bible_issues
             
-            report("世界观评审完成", 45, f"世界观评审通过（{story_bible_score}分）")
+            # 如果3次都未通过85分，选择最佳候选
+            if story_bible_score < 85:
+                report("采用最佳候选", 45, f"世界观采用最佳候选版本（{best_story_bible_score}分）")
+                story_bible = best_story_bible
+                story_bible_score = best_story_bible_score
+                story_bible_issues = best_story_bible_issues
+            else:
+                report("世界观评审完成", 45, f"世界观评审通过（{story_bible_score}分）")
 
             # 5. 生成规则
             report("生成规则", 50, "正在创建书籍规则...")
             book_rules = self._generate_book_rules(book, book.genre)
 
-            # 5.1 评审规则（85分以下重试，最多3次）
+            # 5.1 评审规则（85分以下重试，最多3次），收集所有候选
             report("评审规则", 55, "正在评审创作规则...")
             book_rules_score, book_rules_issues = self._audit_setting_document(
                 book_rules, "创作规则", book)
+            
+            # 收集所有候选结果
+            book_rules_candidates = [(book_rules, book_rules_score, book_rules_issues)]
+            best_book_rules = book_rules
+            best_book_rules_score = book_rules_score
+            best_book_rules_issues = book_rules_issues
             
             for retry in range(3):
                 if book_rules_score >= 85:
@@ -440,8 +536,21 @@ class NovelEngine:
                 book_rules = self._generate_book_rules(book, book.genre, feedback)
                 book_rules_score, book_rules_issues = self._audit_setting_document(
                     book_rules, "创作规则", book)
+                # 收集候选
+                book_rules_candidates.append((book_rules, book_rules_score, book_rules_issues))
+                if book_rules_score > best_book_rules_score:
+                    best_book_rules = book_rules
+                    best_book_rules_score = book_rules_score
+                    best_book_rules_issues = book_rules_issues
             
-            report("规则评审完成", 60, f"规则评审通过（{book_rules_score}分）")
+            # 如果3次都未通过85分，选择最佳候选
+            if book_rules_score < 85:
+                report("采用最佳候选", 60, f"规则采用最佳候选版本（{best_book_rules_score}分）")
+                book_rules = best_book_rules
+                book_rules_score = best_book_rules_score
+                book_rules_issues = best_book_rules_issues
+            else:
+                report("规则评审完成", 60, f"规则评审通过（{book_rules_score}分）")
 
             # 5.2 生成作者意图文档（长期创作方向）
             report("生成作者意图", 65, "正在生成作者意图文档...")
@@ -496,6 +605,14 @@ class NovelEngine:
 
             report("完成", 100, f"《{book.name}》创建成功！")
 
+            # 整理候选结果
+            story_bible_candidates_summary = [
+                {"score": s[1], "issues": s[2]} for s in story_bible_candidates
+            ]
+            book_rules_candidates_summary = [
+                {"score": s[1], "issues": s[2]} for s in book_rules_candidates
+            ]
+            
             return {
                 "success": True,
                 "phase": "created",
@@ -512,7 +629,13 @@ class NovelEngine:
                 "planning": planning,
                 "audit": {
                     "story_bible_score": story_bible_score,
-                    "book_rules_score": book_rules_score
+                    "story_bible_candidates": story_bible_candidates_summary,
+                    "book_rules_score": book_rules_score,
+                    "book_rules_candidates": book_rules_candidates_summary,
+                    "used_best_candidate": {
+                        "story_bible": len(story_bible_candidates) > 1 and story_bible_score < 85,
+                        "book_rules": len(book_rules_candidates) > 1 and book_rules_score < 85
+                    }
                 },
                 "validation": validation_result,
                 "message": f"《{book.name}》创建成功！"
@@ -683,6 +806,695 @@ class NovelEngine:
     def create_book_workflow_with_planning(self, brief: str, planning: Dict) -> Dict[str, Any]:
         """兼容接口：直接调用一站式创建"""
         return self.create_book_workflow(brief)
+
+    # ============== 灵感对话模式 ==============
+
+    def get_inspiration_status(self, book_id: str) -> Dict[str, Any]:
+        """获取书籍的灵感模式状态"""
+        book = self.get_book(book_id)
+        if not book:
+            return {"success": False, "ready": False, "reason": "书籍不存在"}
+        
+        chapters = self.get_chapters(book_id)
+        
+        # 有章节（第0章或任何正式章节）则不能进入灵感模式
+        if len(chapters) > 0:
+            return {
+                "success": True,
+                "ready": False,
+                "reason": "该书籍已有章节，无法进入灵感模式",
+                "chapter_count": len(chapters)
+            }
+        
+        # 检查是否为灵感模式书籍或有未完成的灵感对话
+        is_inspiration = getattr(book, 'is_inspiration', False)
+        dialogue = getattr(book, 'inspiration_dialogue', [])
+        
+        return {
+            "success": True,
+            "ready": True,  # 前端检查此字段
+            "can_enter": True,
+            "is_inspiration_mode": is_inspiration,
+            "has_dialogue": len(dialogue) > 0,
+            "dialogue_count": len(dialogue),
+            "collected_info": getattr(book, 'inspiration_collected_info', {})
+        }
+
+    def enter_inspiration_mode(self, book_id: str) -> Dict[str, Any]:
+        """重新进入灵感对话模式"""
+        book = self.get_book(book_id)
+        if not book:
+            return {"success": False, "message": "书籍不存在"}
+        
+        chapters = self.get_chapters(book_id)
+        if len(chapters) > 0:
+            return {"success": False, "message": "该书籍已有章节，无法进入灵感模式"}
+        
+        # 直接在 book_index 中标记为灵感模式
+        with self.sm._lock:
+            for b in self.sm.book_index.get("books", []):
+                if b.get("id") == book_id:
+                    b["is_inspiration"] = True
+                    break
+        self.sm._save_book_index()
+        
+        # 重新获取书籍以返回最新状态
+        book = self.get_book(book_id)
+        return {
+            "success": True,
+            "message": "已进入灵感对话模式",
+            "collected_info": getattr(book, 'inspiration_collected_info', {}),
+            "dialogue_count": len(getattr(book, 'inspiration_dialogue', []))
+        }
+
+    def init_inspiration_book(self, book_id: str, book_name: str, initial_idea: str = "") -> Dict[str, Any]:
+        """初始化灵感对话模式的书籍"""
+        import threading
+        print(f"[init_inspiration_book {threading.current_thread().name}] 开始初始化，book_id={book_id}")
+        try:
+            from core.models import BookInfo
+            
+            # 创建灵感书籍记录
+            book = BookInfo(
+                id=book_id,
+                name=book_name,
+                path=f"books/{book_id}",
+                genre="",
+                is_inspiration=True,
+                created_at=datetime.now().isoformat()
+            )
+            book.inspiration_collected_info = {
+                "book_name": book_name,
+                "initial_idea": initial_idea,
+                "genre": "",
+                "platform": "",
+                "words_per_chapter": "",
+                "total_chapters": "",
+                "background": "",
+                "protagonist": ""
+            }
+            book.inspiration_dialogue = []
+            
+            # 添加欢迎消息
+            welcome_msg = """👋 你好！欢迎来到灵感创作模式。
+
+请告诉我你的创作想法，比如：
+• 你想写什么类型的故事？
+• 主角有什么特点？
+• 故事背景是什么？
+
+我会通过问答帮助你完善创作构想。"""
+            book.inspiration_dialogue.append({
+                "role": "assistant",
+                "content": welcome_msg,
+                "time": datetime.now().isoformat()
+            })
+            
+            # 第一步：先保存书籍（让前端可以立即轮询到）
+            print(f"[init_inspiration_book] 第一步：保存书籍基础信息...")
+            success, msg = self.sm.create_book(book)
+            if not success:
+                print(f"[init_inspiration_book] create_book失败: {msg}")
+                return {"success": False, "message": msg}
+            print(f"[init_inspiration_book] 基础信息已保存，dialogue长度={len(book.inspiration_dialogue)}")
+            
+            # 第二步：如果有初始创意，后台继续处理
+            if initial_idea:
+                print(f"[init_inspiration_book] 第二步：开始后台处理初始创意...")
+                
+                # 添加用户消息
+                book.inspiration_dialogue.append({
+                    "role": "user",
+                    "content": initial_idea,
+                    "time": datetime.now().isoformat()
+                })
+                
+                # 调用LLM提取信息
+                print(f"[init_inspiration_book] 开始调用LLM提取信息...")
+                extracted = self._extract_inspiration_info(initial_idea, {})
+                book.inspiration_collected_info.update(extracted)
+                print(f"[init_inspiration_book] LLM提取完成")
+                
+                # 检查缺失字段
+                missing = self._get_missing_inspiration_fields(book)
+                
+                # 生成 AI 回复引导用户
+                ai_response = self._generate_inspiration_reply(
+                    book.inspiration_collected_info, 
+                    missing, 
+                    book.inspiration_dialogue
+                )
+                
+                book.inspiration_dialogue.append({
+                    "role": "assistant",
+                    "content": ai_response,
+                    "time": datetime.now().isoformat()
+                })
+                
+                print(f"[init_inspiration_book] 保存完整书籍元数据...")
+            
+            # 最后：保存完整信息
+            save_ok = self.save_book_meta(book)
+            print(f"[init_inspiration_book] 保存完成，dialogue长度={len(book.inspiration_dialogue)}")
+            
+            return {
+                "success": True,
+                "book_id": book_id,
+                "book_name": book_name,
+                "message": "灵感书籍已创建"
+            }
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[init_inspiration_book] 异常: {str(e)}")
+            return {"success": False, "message": f"初始化失败: {str(e)}"}
+
+    def get_inspiration_info(self, book_id: str) -> Dict[str, Any]:
+        """获取灵感书籍的详细信息"""
+        import threading
+        print(f"[get_inspiration_info {threading.current_thread().name}] book_id={book_id}")
+        
+        # 直接从 book_index 字典中获取（不依赖 BookInfo 对象）
+        book_dict = None
+        with self.sm._lock:
+            for b in self.sm.book_index.get("books", []):
+                if b.get("id") == book_id:
+                    book_dict = b
+                    break
+            # 如果内存中找不到，尝试重新加载文件
+            if not book_dict:
+                print(f"[get_inspiration_info] 内存中未找到，尝试重新加载...")
+                reloaded = self.sm._load_book_index()
+                for b in reloaded.get("books", []):
+                    if b.get("id") == book_id:
+                        book_dict = b
+                        self.sm.book_index["books"] = reloaded.get("books", [])
+                        break
+        
+        if not book_dict:
+            print(f"[get_inspiration_info] 书籍不存在: {book_id}")
+            return {"success": False, "message": "书籍不存在"}
+        
+        book = BookInfo.from_dict(book_dict)
+        book_is_inspiration = book_dict.get("is_inspiration", False)
+        dialogue = book_dict.get("inspiration_dialogue", [])
+        collected_info = book_dict.get("inspiration_collected_info", {})
+        print(f"[get_inspiration_info] 书籍: {book.name}, is_inspiration={book_is_inspiration}, dialogue长度={len(dialogue)}")
+        
+        if not book_is_inspiration:
+            print(f"[get_inspiration_info] 该书籍不是灵感状态")
+            return {"success": False, "message": "该书籍不是灵感状态"}
+        
+        # 临时设置属性供 _get_missing_inspiration_fields 使用
+        book.inspiration_collected_info = collected_info
+        
+        result = {
+            "success": True,
+            "book": {
+                "id": book.id,
+                "name": book.name,
+                "collected_info": collected_info,
+                "dialogue": dialogue,
+                "missing_fields": self._get_missing_inspiration_fields(book)
+            }
+        }
+        print(f"[get_inspiration_info] 返回结果: success={result['success']}, dialogue长度={len(dialogue)}")
+        return result
+
+    def _get_missing_inspiration_fields(self, book) -> list:
+        """获取缺失的灵感字段 - 通用字段列表"""
+        collected = getattr(book, 'inspiration_collected_info', {})
+        
+        # 通用设定字段（适用于所有小说）
+        # 系统只维护这个列表，具体需要哪些由LLM根据评审标准判断
+        all_fields = [
+            'genre', 'platform', 'words_per_chapter', 'total_chapters',
+            'background', 'protagonist', 'main_conflict', 'power_system',
+            'factions', 'locations', 'tone_style', 'story_arc', 'supporting_chars',
+            'key_items', 'important_locations', 'themes', 'target_audience'
+        ]
+        
+        field_labels = {
+            'genre': '题材类型', 'platform': '发布平台',
+            'words_per_chapter': '每章字数', 'total_chapters': '总章节数',
+            'background': '世界观背景', 'protagonist': '主角设定',
+            'main_conflict': '核心冲突', 'power_system': '力量体系',
+            'factions': '势力组织', 'locations': '地理场景',
+            'tone_style': '文风基调', 'story_arc': '故事主线',
+            'supporting_chars': '配角设定', 'key_items': '重要物品/道具',
+            'important_locations': '重要地点', 'themes': '核心主题',
+            'target_audience': '目标读者'
+        }
+        
+        missing = []
+        for field in all_fields:
+            if not collected.get(field):
+                missing.append({
+                    "field": field,
+                    "required": field in ['genre', 'platform', 'words_per_chapter', 'total_chapters'],
+                    "label": field_labels.get(field, field)
+                })
+        
+        return missing
+
+    def chat_inspiration(self, book_id: str, user_message: str) -> Dict[str, Any]:
+        """
+        处理灵感对话的核心逻辑
+        
+        流程：
+        1. 分析用户输入，提取设定信息
+        2. 判断是否需要补充更多信息
+        3. 如果完整，提示用户可以生成设定文档
+        4. 如果缺失，引导用户补充（每次2-3个）
+        
+        特殊指令：
+        - "由你决定"：自动调用LLM补全缺失信息
+        """
+        # 直接从 book_index 获取灵感相关字段
+        book_dict = None
+        with self.sm._lock:
+            for b in self.sm.book_index.get("books", []):
+                if b.get("id") == book_id:
+                    book_dict = b
+                    break
+        
+        if not book_dict:
+            return {"success": False, "message": "书籍不存在"}
+        
+        book = self.sm.get_book_by_id(book_id)
+        if not book:
+            return {"success": False, "message": "书籍不存在"}
+        
+        # 从 book_index 字典获取灵感数据（BookInfo 对象不包含这些字段）
+        dialogue = list(book_dict.get("inspiration_dialogue", []))
+        old_collected = dict(book_dict.get("inspiration_collected_info", {}))
+        
+        print(f"[chat_inspiration] book_id={book_id}, 当前collected={old_collected}")
+        
+        # 特殊指令处理："由你决定" -> 自动补全信息
+        if user_message == "由你决定":
+            print("[chat_inspiration] 检测到'由你决定'指令，调用自动补全...")
+            
+            # 添加用户消息
+            dialogue.append({
+                "role": "user",
+                "content": user_message,
+                "time": datetime.now().isoformat()
+            })
+            
+            # 调用自动补全
+            auto_result = self.auto_complete_inspiration(book_id)
+            new_collected = auto_result.get("collected_info", old_collected)
+            
+            # 更新 book_dict
+            book_dict["inspiration_dialogue"] = dialogue
+            book_dict["inspiration_collected_info"] = new_collected
+            
+            # 重新获取更新后的对话
+            dialogue = list(book_dict.get("inspiration_dialogue", []))
+            
+            # 判断缺失的字段
+            class TempBook:
+                def __init__(self, collected):
+                    self.inspiration_collected_info = collected
+            temp_book = TempBook(new_collected)
+            missing = self._get_missing_inspiration_fields(temp_book)
+            
+            # 生成回复
+            response = self._generate_inspiration_reply(old_collected, new_collected, missing, dialogue)
+            
+            # 添加AI回复
+            dialogue.append({
+                "role": "assistant",
+                "content": response,
+                "time": datetime.now().isoformat()
+            })
+            
+            # 保存
+            book.inspiration_collected_info = new_collected
+            book.inspiration_dialogue = dialogue
+            self.save_book_meta(book)
+            self._save_inspiration_to_chatlog(book, dialogue)
+            
+            return {
+                "success": True,
+                "extracted": {},
+                "newly_extracted": auto_result.get("message", "信息已补全"),
+                "can_generate": len(missing) <= 3,
+                "missing_count": len(missing)
+            }
+        
+        dialogue.append({
+            "role": "user",
+            "content": user_message,
+            "time": datetime.now().isoformat()
+        })
+        
+        # 分析用户输入，提取信息
+        extracted = self._extract_inspiration_info(user_message, old_collected)
+        print(f"[chat_inspiration] 提取到: {extracted}")
+        
+        # 更新已收集的信息
+        new_collected = dict(old_collected)
+        new_collected.update(extracted)
+        
+        # 更新 book_dict（直接修改内存中的数据）
+        book_dict["inspiration_dialogue"] = dialogue
+        book_dict["inspiration_collected_info"] = new_collected
+        
+        # 同步更新 book 对象（保持数据一致性）
+        book.inspiration_collected_info = new_collected
+        book.inspiration_dialogue = dialogue
+        
+        # 判断缺失的字段（创建临时对象用于检查）
+        class TempBook:
+            def __init__(self, collected):
+                self.inspiration_collected_info = collected
+        temp_book = TempBook(new_collected)
+        missing = self._get_missing_inspiration_fields(temp_book)
+        required_missing = [m for m in missing if m['required']]
+        optional_missing = [m for m in missing if not m['required']]
+        
+        # 生成回复（传入新旧collected用于对比）
+        response = self._generate_inspiration_reply(old_collected, new_collected, missing, dialogue)
+        
+        # 添加AI回复
+        dialogue.append({
+            "role": "assistant",
+            "content": response,
+            "time": datetime.now().isoformat()
+        })
+        
+        # 保存更新后的数据
+        save_ok = self.save_book_meta(book)
+        print(f"[chat_inspiration] 保存结果: {save_ok}, 对话长度: {len(dialogue)}")
+        
+        # 同时保存到 chatlog（便于与创作无缝衔接）
+        self._save_inspiration_to_chatlog(book, dialogue)
+        
+        # 返回提取到的信息（用于前端反馈）
+        return {
+            "success": True,
+            "response": response,
+            "collected_info": new_collected,
+            "extracted_fields": extracted,  # 本次提取的字段
+            "missing_fields": missing,
+            "can_generate": len(required_missing) == 0,
+            "save_success": save_ok
+        }
+
+    def _extract_inspiration_info(self, user_message: str, current_info: dict) -> dict:
+        """从用户消息中提取灵感信息"""
+        
+        # 构建当前收集状态的摘要
+        summary_parts = []
+        for key, label in [
+            ('genre', '题材'), ('platform', '平台'), ('words_per_chapter', '章节字数'),
+            ('total_chapters', '总章节数'), ('background', '背景'), ('protagonist', '主角'),
+            ('main_conflict', '核心冲突'), ('power_system', '力量体系'),
+            ('factions', '势力'), ('locations', '地理'), ('tone_style', '文风')
+        ]:
+            val = current_info.get(key)
+            if val:
+                summary_parts.append(f"- {label}：{self._truncate(str(val), 100)}")
+            else:
+                summary_parts.append(f"- {label}：未填写")
+        
+        current_summary = "\n".join(summary_parts)
+        
+        prompt = f"""你是一个专业的小说创作顾问，擅长收集创作设定并为后续评分做准备。
+
+【评审标准参考】
+好的设定文档能支撑以下评分维度：
+- 逻辑性（25分）：世界规则、力量体系是否自洽
+- 角色塑造（25分）：主角人设是否清晰、动机是否充分
+- 节奏把控（25分）：冲突设计、势力对抗是否有力
+- 伏笔管理（25分）：是否有足够的伏笔发展空间
+
+【当前已收集的信息】
+{current_summary}
+
+【用户最新输入】
+{user_message}
+
+请从用户输入中提取或补充信息，返回JSON格式：
+{{
+    "genre": "",
+    "platform": "",
+    "words_per_chapter": "",
+    "total_chapters": "",
+    "background": "",
+    "protagonist": "",
+    "main_conflict": "",
+    "power_system": "",
+    "factions": "",
+    "locations": "",
+    "tone_style": ""
+}}
+
+【提取规则】
+1. 只返回JSON，不要有其他内容
+2. 如果某项信息未在用户输入中提到，返回空字符串""
+3. 数值类信息（字数、章节数）提取具体数字
+4. protagonist 字段应包含：姓名、身份、性格特点、核心目标、特殊能力（如有）
+5. main_conflict 字段应包含：主要矛盾、敌方势力、核心对抗
+6. power_system 字段应包含：力量来源、等级划分、能力类型
+7. factions 字段应包含：主要势力/组织及其立场
+8. 如果用户只是闲聊（如"好的"、"继续"、"嗯"），返回空JSON {{}}
+
+请分析并提取："""
+
+        try:
+            import json
+            result = self.llm.generate_json(prompt)
+            if isinstance(result, str):
+                result = json.loads(result)
+            return {k: v for k, v in result.items() if v}
+        except Exception as e:
+            print(f"提取信息失败: {e}")
+            return {}
+
+    def _generate_inspiration_reply(self, old_collected: dict, new_collected: dict, missing: list, dialogue: list) -> str:
+        """生成灵感对话的AI回复 - 由LLM作为核心决策者"""
+        
+        # 构建对话历史摘要（仅用于LLM分析，不用于硬编码逻辑）
+        dialogue_summary = ""
+        for msg in dialogue[-6:]:  # 最近3轮对话
+            role = "用户" if msg.get('role') == 'user' else "我"
+            dialogue_summary += f"\n{role}：{self._truncate(msg.get('content', ''), 200)}"
+        
+        # 本次新提取的信息
+        newly_extracted = {k: v for k, v in new_collected.items() 
+                          if v and v != old_collected.get(k, '')}
+        
+        # 检查书名是否已确定
+        book_name = new_collected.get('book_name', '')
+        name_placeholder = ['新书', '未命名', '未确定', '']
+        name_unconfirmed = book_name in name_placeholder or not book_name
+        
+        prompt = f"""你是小说创作顾问，通过多轮对话帮助用户完善创作设定，最终目标是通过评审取得高分。
+
+【评审标准】（满分100，85分及格）
+- 逻辑性（25分）：世界规则、力量体系是否自洽
+- 角色塑造（25分）：主角人设是否清晰、动机是否充分
+- 节奏把控（25分）：冲突设计、势力对抗是否有力
+- 伏笔管理（25分）：是否有足够的伏笔发展空间
+
+【当前已收集的设定信息】
+{self._format_collected_info(new_collected)}
+
+【本次用户输入中提取的新信息】
+{self._format_new_info(newly_extracted)}
+
+【最近对话历史】
+{dialogue_summary}
+
+【缺失的字段】（仅作为参考）
+{', '.join([m.get('field', '') for m in missing]) if missing else '暂无明确缺失'}
+
+请作为创作顾问，分析并回复用户。要求：
+
+1. **确认提取**：如果用户提供了新信息，先确认已提取并简要展示
+
+2. **分析创意**：深入分析用户描述的创意内核，包括：
+   - 世界观的核心特点是什么？
+   - 有哪些值得深挖的元素？
+   - 对后续创作有什么潜在影响？
+   （用2-3句话点出关键，不要泛泛而谈）
+
+3. **评估完整性**：
+   - 已有的设定能否支撑一个完整的故事？
+   - 哪些评审维度可能得分较低？
+   - 需要重点补充什么来提升评分？
+
+4. **引导对话**：
+   - 提出1-2个有针对性的问题（不要泛泛问"还有什么想法"）
+   - 问题要基于用户已有的创意，引导深入思考
+   - 问开放式问题，避免只能回答"是/否"的问题
+   - **重要**：如果书名未确定（是新书或未填写），必须在"引导对话"部分提醒用户确定书名，这是首要任务
+
+5. **智能补充**：
+   - 当用户输入简短信息时，主动基于已有信息推断补充缺失内容
+   - 特别是背景设定、世界观细节、角色动机等，用户没提到的可以合理推断
+   - 补充内容要简洁自然，融入回复中而非生硬列出
+
+6. **判断是否可生成**：
+   - 如果已有足够信息支撑评审（各维度至少有些许内容），可以建议生成设定文档
+   - 如果关键维度仍然空白，继续引导补充
+
+回复格式示例：
+---
+✅ **已记录**：[简要确认]
+
+💡 **创意洞察**：[2-3句话分析]
+
+📊 **评估**：[完整性判断+提升建议]
+
+🎯 **下一步**：[1-2个针对性问题]
+{f'⚠️ **提醒**：请先确定书名，这是创作的基础！' if name_unconfirmed else ''}
+
+（可选）📝 **提示**：收集足够后可以输入「生成设定文档」
+---
+"""
+        
+        try:
+            response = self.llm.generate(prompt, system_prompt="你是一个专业、热情的小说创作顾问，帮助用户完善创意并为评审做准备。")
+            return response
+        except Exception as e:
+            print(f"生成回复失败: {e}")
+            # 回退到简单确认
+            if newly_extracted:
+                info_list = '\n'.join([f"• {k}：{self._truncate(str(v), 50)}" for k, v in newly_extracted.items()])
+                return f"✅ **已记录：**\n{info_list}\n\n📝 请继续分享你的创作想法，我会帮你梳理完善~"
+            return "📝 请继续分享你的创作想法，我会帮你梳理完善~"
+    
+    def _format_collected_info(self, collected: dict) -> str:
+        """格式化已收集的信息用于LLM分析"""
+        if not collected:
+            return "暂无收集到任何设定信息"
+        
+        lines = []
+        # 按评审维度组织
+        lines.append("【基础设定】")
+        for k in ['genre', 'platform', 'words_per_chapter', 'total_chapters']:
+            if collected.get(k):
+                lines.append(f"  • {k}：{collected[k]}")
+        
+        lines.append("\n【世界观与逻辑性】")
+        if collected.get('background'):
+            lines.append(f"  • 背景：{self._truncate(collected['background'], 150)}")
+        if collected.get('power_system'):
+            lines.append(f"  • 力量体系：{self._truncate(collected['power_system'], 100)}")
+        if collected.get('locations'):
+            lines.append(f"  • 地理场景：{self._truncate(collected['locations'], 100)}")
+        
+        lines.append("\n【角色与动机】")
+        if collected.get('protagonist'):
+            lines.append(f"  • 主角：{self._truncate(collected['protagonist'], 150)}")
+        if collected.get('main_conflict'):
+            lines.append(f"  • 核心冲突：{self._truncate(collected['main_conflict'], 100)}")
+        
+        lines.append("\n【势力与节奏】")
+        if collected.get('factions'):
+            lines.append(f"  • 势力组织：{self._truncate(collected['factions'], 100)}")
+        if collected.get('tone_style'):
+            lines.append(f"  • 文风基调：{collected['tone_style']}")
+        
+        return '\n'.join(lines) if lines else "暂无收集到任何设定信息"
+    
+    def _format_new_info(self, new_info: dict) -> str:
+        """格式化本次新提取的信息"""
+        if not new_info:
+            return "本次输入中未提取到新的设定信息"
+        return '\n'.join([f"  • {k}：{self._truncate(str(v), 80)}" for k, v in new_info.items()])
+    
+    def _truncate(self, text: str, max_len: int) -> str:
+        """截断文本"""
+        if not text:
+            return ''
+        text = str(text)
+        if len(text) <= max_len:
+            return text
+        return text[:max_len] + '...'
+
+    def auto_complete_inspiration(self, book_id: str) -> Dict[str, Any]:
+        """自动补全缺失的灵感信息"""
+        book = self.sm.get_book_by_id(book_id)
+        if not book:
+            return {"success": False, "message": "书籍不存在"}
+        
+        collected = getattr(book, 'inspiration_collected_info', {})
+        dialogue = getattr(book, 'inspiration_dialogue', [])
+        
+        # 构建已有信息摘要
+        summary = "\n".join([f"{k}: {v}" for k, v in collected.items() if v])
+        
+        # 获取缺失字段
+        missing = self._get_missing_inspiration_fields(book)
+        missing_fields = [m['field'] for m in missing]
+        
+        # 如果用户未输入任何信息，给LLM一些默认提示
+        if not summary:
+            summary = "暂无任何收集信息，请根据常见创作规律生成一套通用设定"
+        
+        prompt = f"""你是小说创作助手。用户正在进行灵感创作，已收集的信息如下：
+
+{summary}
+
+缺失字段：{missing_fields if missing_fields else '暂无明确缺失'}
+
+请根据已有信息，推断并补全缺失的设定（返回JSON）。需要补全的字段包括：
+- book_name: 书名（如未确定，生成一个符合题材的书名）
+- genre: 题材（玄幻/仙侠/都市/科幻/青春校园等）
+- platform: 目标平台
+- words_per_chapter: 章节字数（默认2000）
+- total_chapters: 计划总章节数
+- background: 世界观背景设定
+- protagonist: 主角信息（性格、身份、动机）
+- main_conflict: 核心冲突
+- power_system: 力量体系（如有异能元素）
+- factions: 主要势力组织
+
+要求：
+1. 只返回JSON，不要包含任何其他文字
+2. 根据已有信息合理推断缺失项，确保逻辑自洽
+3. 补全内容要有创意、有深度，不要泛泛而谈
+4. 如果某个字段不适合该题材，可以为空字符串
+5. JSON格式：所有字符串值都要用双引号包裹"""
+
+        try:
+            import json
+            result = self.llm.generate_json(prompt)
+            if isinstance(result, str):
+                result = json.loads(result)
+            
+            # 更新收集的信息（只更新空字段，保留用户已填写的内容）
+            for k, v in result.items():
+                if v and not collected.get(k):
+                    collected[k] = v
+            
+            setattr(book, 'inspiration_collected_info', collected)
+            
+            # 记录补全的内容摘要
+            completed = {k: v for k, v in result.items() if v}
+            completed_str = '、'.join(completed.keys()) if completed else '无'
+            
+            # 添加系统消息
+            dialogue.append({
+                "role": "system",
+                "content": f"🤖 根据你的创意，系统已自动推断并补全了以下信息：{completed_str}。请确认是否符合你的预期，如有需要可以修改。",
+                "time": datetime.now().isoformat()
+            })
+            setattr(book, 'inspiration_dialogue', dialogue)
+            self.save_book_meta(book)
+            
+            return {
+                "success": True,
+                "collected_info": collected,
+                "message": "信息已自动补全"
+            }
+        except Exception as e:
+            return {"success": False, "message": f"自动补全失败: {str(e)}"}
 
     def _audit_document(self, doc_name: str, content: str, book: BookInfo = None) -> Dict[str, Any]:
         """评审文档，返回评审结果"""
