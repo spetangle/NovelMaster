@@ -2946,6 +2946,11 @@ async function createNewBook() {
                 addSystemMessage(`💡 进入灵感对话模式，正在初始化...`);
                 await enterInspirationMode();
                 
+                // 启动任务轮询，显示后端进度（提取/分析的进度条）
+                if (taskId) {
+                    startTaskPolling(taskId);
+                }
+                
                 // 显示加载动画
                 const loadingdots = ['.', '..', '...'];
                 let dotIdx = 0;
@@ -2962,8 +2967,8 @@ async function createNewBook() {
                     }
                 };
                 
-                // 等待后台初始化完成（最多等待120秒，每3秒检查一次）
-                let retries = 40;
+                // 等待后台初始化完成（最多等待300秒，每3秒检查一次）
+                let retries = 100;
                 const pollInterval = 3000; // 3秒轮询一次
                 const dotInterval = setInterval(updateLoadingMsg, 300);
                 
@@ -2977,6 +2982,7 @@ async function createNewBook() {
                             console.log('对话数据:', dialogue, '长度:', dialogue.length);
                             if (dialogue && dialogue.length > 0) {
                                 clearInterval(dotInterval);
+                                stopTaskPolling();  // 停止任务进度轮询
                                 await loadInspirationDialogue(bookId);
                                 return; // 成功返回
                             } else {
@@ -3653,7 +3659,7 @@ let inspirationGeneratePollInterval = null;
 function startInspirationGeneratePolling(taskId) {
     stopInspirationGeneratePolling();
     inspirationGenerateTaskId = taskId;
-    inspirationGeneratePollInterval = setInterval(() => pollInspirationGenerateStatus(taskId), 2000);
+    inspirationGeneratePollInterval = setInterval(() => pollInspirationGenerateStatus(taskId), 5000);
     addSystemMessage(`🔄 正在生成设定文档 (ID: ${taskId})...`);
     
     // 显示终止按钮
@@ -3741,6 +3747,7 @@ async function pollInspirationGenerateStatus(taskId) {
             // 显示步骤进度
             if (task.step && task.step !== lastStep) {
                 addSystemMessage(`📝 ${task.step}: ${message}`);
+                lastStep = task.step;
             }
         }
 

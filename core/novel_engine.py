@@ -494,6 +494,9 @@ class NovelEngine:
             characters = self._generate_characters(book, planning, protagonist_detail=True)
             book_path = self.workspace / book.path
 
+            # 统一时间戳，用于本次工作流的所有中间文件
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
             # 4. 生成世界观（带人物信息）
             # 使用新的评审-修订循环机制
             report("生成世界观", 35, "正在创建世界观设定...")
@@ -506,7 +509,9 @@ class NovelEngine:
                 report=report,
                 base_progress=35,
                 max_score_progress=45,
-                cancel_check=check_cancel
+                cancel_check=check_cancel,
+                book=book,
+                timestamp=timestamp
             )
             story_bible = story_bible_result["content"]
             story_bible_score = story_bible_result["final_score"]
@@ -516,7 +521,6 @@ class NovelEngine:
             story_bible_issues = story_bible_result["final_issues"]
             
             # 保存世界观设定生成报告
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             self._save_document_generation_report(book, "世界观设定", story_bible_result, timestamp)
 
             # 5. 生成规则
@@ -530,7 +534,9 @@ class NovelEngine:
                 report=report,
                 base_progress=50,
                 max_score_progress=60,
-                cancel_check=check_cancel
+                cancel_check=check_cancel,
+                book=book,
+                timestamp=timestamp
             )
             book_rules = book_rules_result["content"]
             book_rules_score = book_rules_result["final_score"]
@@ -600,10 +606,14 @@ class NovelEngine:
 
             # 整理候选结果
             story_bible_candidates_summary = [
-                {"score": s[1], "issues": s[2]} for s in story_bible_candidates
+                {"round": s.get("round", "?"), "action": s.get("action", "?"),
+                 "score": s.get("score", 0), "issues": s.get("issues", "")}
+                for s in story_bible_candidates
             ]
             book_rules_candidates_summary = [
-                {"score": s[1], "issues": s[2]} for s in book_rules_candidates
+                {"round": s.get("round", "?"), "action": s.get("action", "?"),
+                 "score": s.get("score", 0), "issues": s.get("issues", "")}
+                for s in book_rules_candidates
             ]
             
             return {
@@ -703,14 +713,44 @@ class NovelEngine:
         return characters_doc
     
     def _audit_setting_document(self, content: str, doc_type: str, book: BookInfo) -> tuple:
-        """评审设定文档，返回(评分, 问题列表)"""
-        prompt = f"""请评审以下{doc_type}文档，评分标准（满分100，85分及格）：
-
-评分维度：
-1. 完整性（25分）：是否包含所有必要章节
+        """评审设定文档，返回(评分, 问题列表)
+        
+        不同文档类型使用专属评审标准，避免张冠李戴：
+        - 世界观设定：只评世界观相关，不要求章节结构/伏笔
+        - 创作规则：只评规则相关，不要求世界观细节
+        """
+        # 根据文档类型定义专属评审维度（调用方传入"世界观设定"/"创作规则"/"章节大纲"等）
+        if "世界观" in doc_type:
+            dimensions = """评分维度（满分100，85分及格。请严格围绕"世界观设定"本身评审，不要评审章节结构、伏笔网络、人物动机等不属于世界观的内容）：
+1. 世界背景（20分）：时代背景、世界起源、历史脉络是否清晰具体
+2. 力量体系（20分）：能力分类、等级划分、规则限制是否自洽完整
+3. 势力设定（20分）：主要势力/组织是否清晰，相互关系是否合理
+4. 空间地理（20分）：关键地点、环境设定是否有画面感和可创作性
+5. 内部一致性（20分）：各项设定之间是否逻辑自洽，无矛盾"""
+        elif "规则" in doc_type:
+            dimensions = """评分维度（满分100，85分及格。请严格围绕"创作规则"本身评审，不要评审世界观细节、势力设定等内容）：
+1. 写作规范（25分）：节奏、字数、风格等创作规范是否明确
+2. 角色规则（25分）：人物行为逻辑、成长路径、关系规则是否清晰
+3. 情节规则（25分）：冲突设置、转折节点、爽点分布是否有指导性
+4. 一致性约束（25分）：是否有清晰的创作红线/禁忌，防止前后矛盾"""
+        elif "大纲" in doc_type:
+            dimensions = """评分维度（满分100，85分及格）：
+1. 结构完整（25分）：起承转合是否完整，章节分布是否合理
+2. 节奏把控（25分）：高潮与日常的交替是否得当，信息量是否适中
+3. 伏笔管理（25分）：是否有足够的伏笔和悬念设计
+4. 事件逻辑（25分）：章节之间因果链是否清晰，无跳跃"""
+        else:
+            dimensions = """评分维度（满分100，85分及格）：
+1. 完整性（25分）：是否包含必要的关键要素
 2. 一致性（25分）：内部设定是否自洽
 3. 实用性（25分）：对创作是否有指导意义
-4. 创新性（25分）：是否有独特亮点
+4. 创新性（25分）：是否有独特亮点"""
+
+        prompt = f"""请评审以下{doc_type}文档。
+
+{dimensions}
+
+⚠️ 注意：只评审{doc_type}应有的内容，不要因为文档缺少"不属于{doc_type}范畴的内容"而扣分。
 
 评审文档：
 {content[:3000]}
@@ -726,7 +766,7 @@ class NovelEngine:
 """
         
         try:
-            response = self.llm.generate(prompt, system_prompt="你是一个专业的小说设定评审专家。")
+            response = self.llm.generate(prompt, system_prompt="你是一个专业的小说设定评审专家。请严格围绕文档类型本身的职责进行评审，不要越界评审。")
             # 解析评分
             score = 85  # 默认分数
             issues = ""
@@ -747,7 +787,8 @@ class NovelEngine:
     def _generate_and_audit_document(self, doc_type: str, generate_func, revise_func,
                                      audit_func, report, base_progress: int, 
                                      max_score_progress: int, pass_score: int = 85,
-                                     max_cycles: int = 3, cancel_check: Callable = None) -> Dict:
+                                     max_cycles: int = 3, cancel_check: Callable = None,
+                                     book: BookInfo = None, timestamp: str = None) -> Dict:
         """
         生成-评审-修订循环机制
         
@@ -762,6 +803,8 @@ class NovelEngine:
             pass_score: 及格分数，默认85
             max_cycles: 最大循环次数，默认3
             cancel_check: 取消检查函数，返回True表示任务被取消
+            book: 书籍对象，用于保存中间文件
+            timestamp: 时间戳，用于文件命名
         
         Returns:
             包含最终内容、分数、候选列表等信息的字典
@@ -776,6 +819,30 @@ class NovelEngine:
         best_score = 0
         best_issues = ""
         
+        # 内部保存辅助函数：分步保存生成/修订/评审结果到本地文件
+        def _save_step(step_name: str, round_num: int, content: str = None, 
+                       score: int = None, issues: str = None):
+            if not book:
+                return
+            try:
+                report_dir = self.workspace / book.path / "generation_reports"
+                report_dir.mkdir(parents=True, exist_ok=True)
+                ts = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+                safe_type = doc_type.replace("/", "_").replace("\\", "_")
+                
+                if content:
+                    filepath = report_dir / f"{safe_type}_round{round_num}_{step_name}_{ts}.md"
+                    header = f"# {book.name} - {doc_type} - 第{round_num}轮{step_name}\n"
+                    header += f"**时间**：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    if score is not None:
+                        header += f"**评分**：{score}分\n"
+                    if issues:
+                        header += f"\n## 问题\n{issues}\n\n---\n\n"
+                    filepath.write_text(header + content, encoding='utf-8')
+                    print(f"[_generate_and_audit_document] 已保存: {filepath.name}")
+            except Exception as e:
+                print(f"[_generate_and_audit_document] 保存步骤文件失败: {e}")
+        
         # 第1轮：生成 + 评审
         report("生成文档", base_progress, f"正在生成{doc_type}...")
         if is_cancelled():
@@ -784,8 +851,14 @@ class NovelEngine:
         if is_cancelled():
             raise CancelledException("任务被用户终止")
         
+        # 保存初次生成结果
+        _save_step("生成", 1, content=content)
+        
         report("评审文档", base_progress + 3, f"正在评审{doc_type}...")
         score, issues = audit_func(content)
+        
+        # 保存初次评审结果
+        _save_step("评审", 1, content=content, score=score, issues=issues)
         
         candidates.append({
             "round": 1,
@@ -842,9 +915,15 @@ class NovelEngine:
                       f"{doc_type}第{cycle-1}次修订失败，采用当前最佳版本")
                 break
             
+            # 保存修订结果
+            _save_step("修订", cycle, content=revised_content)
+            
             # 评审修订后的内容
             report("评审修订", cycle_progress + 3, f"正在评审第{cycle-1}次修订结果...")
             revised_score, revised_issues = audit_func(revised_content)
+            
+            # 保存修订后的评审结果
+            _save_step("评审", cycle, content=revised_content, score=revised_score, issues=revised_issues)
             
             candidates.append({
                 "round": cycle,
@@ -1166,8 +1245,19 @@ class NovelEngine:
             "dialogue_count": len(getattr(book, 'inspiration_dialogue', []))
         }
 
-    def init_inspiration_book(self, book_id: str, book_name: str, initial_idea: str = "") -> Dict[str, Any]:
-        """初始化灵感对话模式的书籍"""
+    def init_inspiration_book(self, book_id: str, book_name: str, initial_idea: str = "", 
+                              progress_callback=None) -> Dict[str, Any]:
+        """初始化灵感对话模式的书籍
+        
+        修复：所有 LLM 处理在 create_book 之前完成，确保保存时数据完整，
+        避免前端在中间状态就触发 auto_complete。
+        
+        Args:
+            book_id: 书籍ID
+            book_name: 书名
+            initial_idea: 初始创意输入
+            progress_callback: 可选进度回调 callback(progress, message, step)
+        """
         import threading
         print(f"[init_inspiration_book {threading.current_thread().name}] 开始初始化，book_id={book_id}")
         try:
@@ -1209,17 +1299,11 @@ class NovelEngine:
                 "time": datetime.now().isoformat()
             })
             
-            # 第一步：先保存书籍（让前端可以立即轮询到）
-            print(f"[init_inspiration_book] 第一步：保存书籍基础信息...")
-            success, msg = self.sm.create_book(book)
-            if not success:
-                print(f"[init_inspiration_book] create_book失败: {msg}")
-                return {"success": False, "message": msg}
-            print(f"[init_inspiration_book] 基础信息已保存，dialogue长度={len(book.inspiration_dialogue)}")
-            
-            # 第二步：如果有初始创意，后台继续处理
+            # ---- 第一步：在保存之前，完成所有 LLM 处理 ----
             if initial_idea:
-                print(f"[init_inspiration_book] 第二步：开始后台处理初始创意...")
+                print(f"[init_inspiration_book] 开始处理初始创意...")
+                if progress_callback:
+                    progress_callback(10, "正在解析创意输入...", "解析创意")
                 
                 # 添加用户消息
                 book.inspiration_dialogue.append({
@@ -1228,16 +1312,22 @@ class NovelEngine:
                     "time": datetime.now().isoformat()
                 })
                 
-                # 调用LLM提取信息
+                if progress_callback:
+                    progress_callback(30, "正在用AI分析创意内容...", "AI分析")
+                
+                # 调用LLM精确提取信息（所有产出均由LLM生成，不依赖正则兜底）
                 print(f"[init_inspiration_book] 开始调用LLM提取信息...")
-                extracted = self._extract_inspiration_info(initial_idea, {})
-                book.inspiration_collected_info.update(extracted)
-                print(f"[init_inspiration_book] LLM提取完成")
+                llm_extracted = self._extract_inspiration_info(initial_idea, current_info=book.inspiration_collected_info)
+                book.inspiration_collected_info.update(llm_extracted)
+                print(f"[init_inspiration_book] LLM提取完成: {llm_extracted}")
                 
                 # 检查缺失字段
                 missing = self._get_missing_inspiration_fields(book)
                 
-                # 生成 AI 回复引导用户
+                if progress_callback:
+                    progress_callback(60, "正在生成对话引导...", "生成引导")
+                
+                # 生成 AI 回复引导用户（由LLM产出，不做兜底）
                 ai_response = self._generate_inspiration_reply(
                     book.inspiration_collected_info, 
                     book.inspiration_collected_info,
@@ -1250,11 +1340,13 @@ class NovelEngine:
                     "content": ai_response,
                     "time": datetime.now().isoformat()
                 })
-                
-                print(f"[init_inspiration_book] 保存完整书籍元数据...")
             
-            # 最后：保存完整信息
-            save_ok = self.save_book_meta(book)
+            # ---- 第二步：所有数据就绪，一次性保存 ----
+            print(f"[init_inspiration_book] 一次性保存完整书籍数据...")
+            success, msg = self.sm.create_book(book)
+            if not success:
+                print(f"[init_inspiration_book] create_book失败: {msg}")
+                return {"success": False, "message": msg}
             print(f"[init_inspiration_book] 保存完成，dialogue长度={len(book.inspiration_dialogue)}")
             
             return {
@@ -1401,13 +1493,17 @@ class NovelEngine:
                 "content": user_message,
                 "time": datetime.now().isoformat()
             })
+            # 先同步用户消息到book_dict（auto_complete会从book_index读取）
+            book_dict["inspiration_dialogue"] = dialogue
             
-            # 调用自动补全
+            # 调用自动补全（内部会读取book_index的dialogue并追加system消息，然后保存）
             auto_result = self.auto_complete_inspiration(book_id)
             new_collected = auto_result.get("collected_info", old_collected)
             
-            # 更新 book_dict
-            book_dict["inspiration_dialogue"] = dialogue
+            # ---- 修复：不覆盖auto_complete已保存的数据 ----
+            # auto_complete_inspiration内部已保存了完整dialogue到book_index
+            # 这里从book_dict重新读取，保留auto_complete追加的system消息
+            dialogue = list(book_dict.get("inspiration_dialogue", []))
             book_dict["inspiration_collected_info"] = new_collected
             
             # 检测书名是否变化，如果变化则同步更新所有文档
@@ -1427,9 +1523,6 @@ class NovelEngine:
                 if rename_result.get('success') and rename_result.get('updated', True):
                     print(f"[chat_inspiration auto-complete] 书名更新成功，更新的文档: {rename_result.get('updated_docs', [])}")
             
-            # 重新获取更新后的对话
-            dialogue = list(book_dict.get("inspiration_dialogue", []))
-            
             # 判断缺失的字段
             class TempBook:
                 def __init__(self, collected):
@@ -1447,9 +1540,10 @@ class NovelEngine:
                 "time": datetime.now().isoformat()
             })
             
-            # 保存
+            # 保存（确保数据一致性）
             book.inspiration_collected_info = new_collected
             book.inspiration_dialogue = dialogue
+            book_dict["inspiration_dialogue"] = dialogue
             self.save_book_meta(book)
             self._save_inspiration_to_chatlog(book, dialogue)
             
@@ -1572,6 +1666,8 @@ class NovelEngine:
 
 请仔细阅读用户输入，提取其中的创作信息。即使信息分散在不同位置，也要完整提取。
 
+⚠️ 核心原则：你的任务是「提取」而非「创作」。用户写什么就提取什么，禁止改写、替换、美化用户的创意内容。
+
 提取规则：
 1. 只返回JSON，不要有任何其他文字
 2. 如果用户明确提供了某个字段（如"题材：都市异能"），必须提取
@@ -1583,6 +1679,13 @@ class NovelEngine:
 8. 背景是故事发生的世界观设定
 9. 如果用户输入了梗概或故事大纲，提取到 background 或 main_conflict
 10. 如果某项信息用户没有提供，返回空字符串""
+
+⚠️ 忠实性约束（极其重要！违反将导致用户创意被破坏）：
+- 绝对忠实于用户文字：用户写"彗星爆炸引发变异"就不要改成"血脉觉醒"、"古玉传承"等
+- 禁止修改用户提供的人名、地名、专有名词（如主角叫余凌就不写成林逸）
+- 用户描述的世界观起源（彗星/重生/外星/魔法等）必须原样保留，不得替换
+- 用户描述的创作风格（轻松幽默/热血/悬疑等）必须原样保留，不得自行修改
+- 一句话总结：「提取」是把用户的话搬运到对应字段，不是用你自己的话重写一遍
 
 返回JSON格式：
 {{
@@ -1602,19 +1705,37 @@ class NovelEngine:
 
 请分析用户输入并返回JSON："""
 
-        try:
-            import json
-            print(f"[_extract_inspiration_info] 开始提取，prompt长度={len(prompt)}")
-            result = self.llm.generate_json(prompt)
-            if isinstance(result, str):
-                result = json.loads(result)
-            print(f"[_extract_inspiration_info] 提取结果: {result}")
-            return {k: v for k, v in result.items() if v}
-        except Exception as e:
-            print(f"提取信息失败: {e}")
-            import traceback
-            traceback.print_exc()
-            return {}
+        import json
+        import re
+        print(f"[_extract_inspiration_info] 开始提取，prompt长度={len(prompt)}")
+        
+        # 使用文本模式（不用json_mode=True），避免部分API不兼容
+        # 使用LLM默认超时（300s），确保有足够时间完成调用
+        success, text_result = self.llm.call(
+            prompt, 
+            json_mode=False,
+            agent_name="InspirationExtractor"
+        )
+        
+        if not success or not text_result:
+            raise RuntimeError(f"LLM提取信息失败: {text_result}")
+        
+        # 手动提取 JSON（兼容各种格式：裸JSON / ```json ... ``` / 混合文本中的JSON）
+        json_str = text_result.strip()
+        
+        # 尝试移除 markdown 代码块标记
+        md_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', json_str, re.DOTALL)
+        if md_match:
+            json_str = md_match.group(1).strip()
+        else:
+            # 尝试提取 { ... } 最外层 JSON
+            brace_match = re.search(r'\{.*\}', json_str, re.DOTALL)
+            if brace_match:
+                json_str = brace_match.group(0)
+        
+        result = json.loads(json_str)
+        print(f"[_extract_inspiration_info] 提取结果: {result}")
+        return {k: v for k, v in result.items() if v}
 
     def _generate_inspiration_reply(self, old_collected: dict, new_collected: dict, missing: list, dialogue: list) -> str:
         """生成灵感对话的AI回复 - 由LLM作为核心决策者"""
@@ -1680,6 +1801,8 @@ class NovelEngine:
 5. **智能补充**：
    - 当用户输入简短信息时，主动基于已有信息推断补充缺失内容
    - 特别是背景设定、世界观细节、角色动机等，用户没提到的可以合理推断
+   - **推断必须基于用户已有的设定延伸，不得引入用户未提及的新世界观框架**
+   - 例如：用户说了「彗星变异」，你可以补充变异后的社会结构，但不能把变异原因改成「血脉传承」「古玉觉醒」
    - 补充内容要简洁自然，融入回复中而非生硬列出
 
 6. **判断是否可生成**：
@@ -1701,16 +1824,15 @@ class NovelEngine:
 ---
 """
         
-        try:
-            response = self.llm.generate(prompt, system_prompt="你是一个专业、热情的小说创作顾问，帮助用户完善创意并为评审做准备。")
+        response = self.llm.generate(
+            prompt, 
+            system_prompt="你是一个专业、热情的小说创作顾问，帮助用户完善创意并为评审做准备。核心原则：忠于用户的原始创意，在用户已有设定的基础上延伸，绝不替换用户的世界观、主角、风格等核心要素。"
+        )
+        
+        if response and not response.startswith("[生成失败:"):
             return response
-        except Exception as e:
-            print(f"生成回复失败: {e}")
-            # 回退到简单确认
-            if newly_extracted:
-                info_list = '\n'.join([f"• {k}：{self._truncate(str(v), 50)}" for k, v in newly_extracted.items()])
-                return f"✅ **已记录：**\n{info_list}\n\n📝 请继续分享你的创作想法，我会帮你梳理完善~"
-            return "📝 请继续分享你的创作想法，我会帮你梳理完善~"
+        else:
+            raise RuntimeError(f"LLM生成回复失败: {response}")
     
     def _format_collected_info(self, collected: dict) -> str:
         """格式化已收集的信息用于LLM分析"""
@@ -1762,7 +1884,11 @@ class NovelEngine:
         return text[:max_len] + '...'
 
     def auto_complete_inspiration(self, book_id: str) -> Dict[str, Any]:
-        """自动补全缺失的灵感信息"""
+        """自动补全缺失的灵感信息
+        
+        修复：包含对话历史上下文，确保LLM理解用户原始意图；
+        强化"已确定设定"的不可修改约束。
+        """
         book = self.sm.get_book_by_id(book_id)
         if not book:
             return {"success": False, "message": "书籍不存在"}
@@ -1777,8 +1903,16 @@ class NovelEngine:
         missing = self._get_missing_inspiration_fields(book)
         missing_fields = [m['field'] for m in missing]
         
+        # 构建对话历史上下文（让LLM理解用户原始意图）
+        dialogue_context = ""
+        user_messages = [msg for msg in dialogue if msg.get('role') == 'user']
+        if user_messages:
+            dialogue_context = "【用户原始创意】（这是用户最原始的创作想法，补全时必须基于此）：\n"
+            for msg in user_messages[-3:]:  # 最近3条用户消息
+                dialogue_context += f"{msg.get('content', '')}\n"
+        
         # 如果用户未输入任何信息，给LLM一些默认提示
-        if not summary:
+        if not summary and not dialogue_context:
             summary = "暂无任何收集信息，请根据常见创作规律生成一套通用设定"
         
         # 分离已填写和缺失的字段
@@ -1790,27 +1924,62 @@ class NovelEngine:
         
         prompt = f"""你是小说创作助手。用户正在进行灵感创作。
 
-【已确定的设定 - 必须原样保留，禁止修改】：
+{dialogue_context}
+【已确定的设定 - 以下是用户已明确的信息，必须原样保留，绝对禁止修改或替换】：
 {filled_str}
 
-【需要补全的字段】（如果缺失才补全，已填写的不处理）：
+【需要补全的字段】（只补全以下缺失字段，已填写的字段绝对不能重复输出、不能修改）：
 {missing_fields_list if missing_fields_list else '暂无明确缺失'}
 
-请根据已有信息，推断并补全缺失的设定（返回JSON）。
+请仔细阅读用户原始创意和已确定设定，在用户已有想法的基础上推断并补全缺失的设定（返回JSON）。
 
-要求：
+⚠️ 核心原则：补全 = 从用户已有设定「自然延伸」，不是另起炉灶或用你的常识替换用户的创意。
+
+严格要求：
 1. 只返回JSON，不要包含任何其他文字
-2. 只补全缺失字段，已填写的字段不要重复输出
-3. 补全内容要有创意、有深度，确保逻辑自洽
-4. 如果某个字段不适合该题材，可以为空字符串或空数组
-5. JSON格式：所有字符串值都要用双引号包裹
-6. 特别注意：book_name 如果已填写，必须原样返回，不要生成新书名"""
+2. 只补全缺失字段，绝对不要输出已填写的字段（包括genre、book_name等）
+3. 补全内容必须与用户已有设定逻辑自洽，严禁推翻用户已确定的内容
+4. 如果用户设定了「都市异能」，绝对不能改成「玄幻修仙」等
+5. 如果用户设定了「番茄小说」平台，不能添加其他平台
+6. 如果某个字段不适合该题材，可以为空字符串或空数组
+7. JSON格式：所有字符串值都要用双引号包裹
+8. 特别注意：book_name 如果已填写，必须原样返回，不要生成新书名
+
+⚠️ 忠实性硬约束（违反任何一条都算失败）：
+- 如果用户已明确世界起源（如「彗星爆炸导致变异」），补全的设定必须基于此起源展开，禁止引入用户未提及的新世界框架（如改为「血脉传承」「古玉觉醒」「灵气复苏」等）
+- 如果用户已明确主角姓名和身份，补全时禁止修改姓名、禁止改变核心身份设定
+- 如果用户已明确创作风格（如「轻松幽默」），补全的设定基调必须一致，不能变成「热血严肃」「黑暗深沉」
+- 如果用户已明确故事结构（如「重生」），补全时必须保留重生设定，不能改为普通人成长
+- 补全的内容只能「补充细节」，不能「替换框架」。例如用户说彗星变异→你可以补充变异后的社会结构变化，但不能把变异原因改成血脉传承"""
 
         try:
             import json
-            result = self.llm.generate_json(prompt)
-            if isinstance(result, str):
-                result = json.loads(result)
+            import re
+            
+            # 使用文本模式（不用json_mode=True），避免部分API不兼容
+            success, text_result = self.llm.call(
+                prompt,
+                json_mode=False,
+                agent_name="AutoComplete"
+            )
+            
+            if not success or not text_result:
+                raise RuntimeError(f"LLM自动补全调用失败: {text_result}")
+            
+            # 手动提取 JSON
+            json_str = text_result.strip()
+            md_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', json_str, re.DOTALL)
+            if md_match:
+                json_str = md_match.group(1).strip()
+            else:
+                brace_match = re.search(r'\{.*\}', json_str, re.DOTALL)
+                if brace_match:
+                    json_str = brace_match.group(0)
+            
+            result = json.loads(json_str)
+            
+            if not isinstance(result, dict):
+                raise RuntimeError(f"自动补全返回非dict类型: {type(result)}")
             
             # 更新收集的信息（只更新空字段，保留用户已填写的内容）
             for k, v in result.items():
@@ -1853,21 +2022,52 @@ class NovelEngine:
             return {"success": False, "message": f"自动补全失败: {str(e)}"}
 
     def _audit_document(self, doc_name: str, content: str, book: BookInfo = None) -> Dict[str, Any]:
-        """评审文档，返回评审结果"""
+        """评审文档，返回评审结果
+        
+        根据文档类型使用专属评审维度，避免张冠李戴：
+        - 世界观设定：只评世界观，不要求章节结构/伏笔
+        - 创作规则：只评规则，不要求世界观细节
+        - 章节大纲：评结构/节奏/伏笔
+        """
         if not book:
             book = self.sm.get_current_book()
+
+        # 根据文档类型定义专属评审维度
+        if "世界观" in doc_name:
+            dimensions = """评分维度（请严格围绕"世界观设定"本身评审，不要评审章节结构、伏笔网络、人物动机等不属于世界观的内容）：
+1. 世界背景：时代背景、世界起源、历史脉络是否清晰具体
+2. 力量体系：能力分类、等级划分、规则限制是否自洽完整
+3. 势力设定：主要势力/组织是否清晰，相互关系是否合理
+4. 空间地理：关键地点、环境设定是否有画面感
+5. 内部一致性：各项设定之间是否逻辑自洽，无矛盾"""
+        elif "规则" in doc_name:
+            dimensions = """评分维度（请严格围绕"创作规则"本身评审，不要评审世界观细节、势力设定等不属于规则的内容）：
+1. 写作规范：节奏、字数、风格等创作规范是否明确
+2. 角色规则：人物行为逻辑、成长路径、关系规则是否清晰
+3. 情节规则：冲突设置、转折节点、爽点分布是否有指导性
+4. 一致性约束：是否有清晰的创作红线/禁忌，防止前后矛盾"""
+        elif "大纲" in doc_name:
+            dimensions = """评分维度：
+1. 结构完整：起承转合是否完整，章节分布是否合理
+2. 节奏把控：高潮与日常的交替是否得当，信息量是否适中
+3. 伏笔管理：是否有足够的伏笔和悬念设计
+4. 事件逻辑：章节之间因果链是否清晰，无跳跃"""
+        else:
+            dimensions = """评分维度：
+1. 完整性：是否包含必要的关键要素
+2. 一致性：内部逻辑是否自洽
+3. 可操作性：是否能为后续创作提供有效指导"""
 
         prompt = f"""请对小说《{book.name}》的【{doc_name}】进行质量评审。
 
 题材：{book.genre if book.genre else '未指定'}
 
+{dimensions}
+
+⚠️ 注意：只评审{doc_name}应有的内容，不要因为文档缺少"不属于{doc_name}范畴的内容"而扣分。
+
 文档内容：
 {content[:5000]}
-
-请从以下维度进行评审：
-1. **完整性** - 是否包含必要的关键要素
-2. **一致性** - 内部逻辑是否自洽
-3. **可操作性** - 是否能为后续创作提供有效指导
 
 请输出：
 - **评分**：（1-100分）
@@ -3020,21 +3220,27 @@ class NovelEngine:
 
     def _parse_brief(self, brief: str) -> Dict[str, Any]:
         """解析创作简报"""
-        prompt = f"""请分析以下创作简报，提取关键信息并生成JSON格式的创作规划：
+        prompt = f"""请分析以下创作简报，提取关键信息并生成JSON格式的创作规划。
+
+⚠️ 核心原则：你的任务是「提取」而非「创作」。用户写什么就提取什么，禁止改写或替换用户的创意。
 
 创作简报：
 {brief}
 
 请返回JSON格式，包含以下字段：
-- book_name: 书名（如果简报中没有提供书名，请根据内容生成一个吸引人的书名）
+- book_name: 书名（如果简报中明确提供了书名，直接提取；如果未提供，根据内容生成一个吸引人的书名）
 - genre: 题材（玄幻/仙侠/都市/科幻/其他）
 - platform: 目标平台
 - words_per_chapter: 单章字数
 - estimated_chapters: 预期章节数
 - estimated_words: 预计完本字数
-- core_setting: 核心设定摘要
-- main_direction: 主线方向
+- core_setting: 核心设定摘要（必须忠实于用户提供的文字，禁止添加用户未提及的内容，禁止改写用户的设定）
+- main_direction: 主线方向（基于用户提供的梗概/大纲提取，不要自行编造）
 - opening_strategy: 开篇策略
+
+⚠️ 忠实性约束：
+- 绝对忠实于用户文字：用户写「彗星爆炸导致变异」就不要改成「血脉觉醒」等
+- 禁止修改用户提供的人名、世界观起源、故事结构等核心设定
 """
         result = self.llm.generate_json(prompt, self.llm.get_system_prompt("planner"))
         if result:
@@ -3248,18 +3454,29 @@ class NovelEngine:
                 return f"# {book.name} 世界观设定\n\n{result}"
             
             print(f"[_revise_story_bible] 修订结果无效，使用回退模板")
-            return self._generate_story_bible_fallback(book, protagonist_name, genre, 
-                                                        planning.get('system', '异能'), 
-                                                        planning.get('风格', '热血'))
+            genre_defaults_for_fallback = {
+                '都市': {'system': planning.get('system', '异能'), 'org': '超能管理局'},
+                '玄幻': {'system': planning.get('system', '修炼体系'), 'org': '宗门势力'},
+                '仙侠': {'system': planning.get('system', '修仙体系'), 'org': '仙门世家'},
+                '科幻': {'system': planning.get('system', '高科技'), 'org': '星际联盟'},
+            }
+            fallback_defaults = genre_defaults_for_fallback.get(genre, genre_defaults_for_fallback['都市'])
+            fallback_style = planning.get('风格', '热血')
+            return self._generate_story_bible_fallback(book, protagonist_name, genre,
+                                                        fallback_defaults, fallback_style)
         except Exception as e:
             print(f"[_revise_story_bible] 修订异常: {e}")
             return original_content if original_content else self._generate_story_bible_fallback(
-                book, protagonist_name, genre, planning.get('system', '异能'), planning.get('风格', '热血')
+                book, protagonist_name, genre,
+                {'system': planning.get('system', '异能'), 'org': '官方势力'},
+                planning.get('风格', '热血')
             )
     
     def _generate_story_bible_fallback(self, book: BookInfo, protagonist_name: str, 
                                        genre: str, defaults: dict, style: str) -> str:
         """世界观设定回退模板"""
+        system_default = defaults.get('system', '异能觉醒体系')
+        org_default = defaults.get('org', '官方势力')
         return f"""# {book.name} 世界观设定
 
 ## 一、世界观背景
@@ -3272,7 +3489,7 @@ class NovelEngine:
 - 隐藏世界：觉醒者的地下世界
 
 ### 1.3 世界规则
-- 超能力来源：{defaults['system']}
+- 超能力来源：{system_default}
 - 能力等级：初级 → 中级 → 高级 → 顶级 → 传说
 - 能力限制：每次使用消耗精神力，精神力耗尽将陷入昏迷
 
@@ -3289,7 +3506,7 @@ class NovelEngine:
 ## 三、势力/门派/组织
 
 ### 3.1 官方势力
-- **名称**：{defaults['org']}
+- **名称**：{org_default}
 - **职能**：管控觉醒者，维护秩序
 
 ### 3.2 民间组织

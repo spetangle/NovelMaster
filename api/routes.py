@@ -87,9 +87,15 @@ async def create_book(data: CreateBookRequest):
                 task_manager.update_task(task.id, status=TaskStatus.RUNNING, progress=0, 
                     message="初始化灵感模式...", step="灵感对话")
                 
-                # 初始化灵感书籍
+                # 进度回调 - 更新任务进度
+                def progress_callback(progress, message, step):
+                    task_manager.update_task(task.id, status=TaskStatus.RUNNING,
+                        progress=progress, message=message, step=step)
+                
+                # 初始化灵感书籍，传入进度回调
                 print(f"[灵感线程] 调用 init_inspiration_book...")
-                result = engine.init_inspiration_book(book_id, book_name, data.brief)
+                result = engine.init_inspiration_book(book_id, book_name, data.brief,
+                    progress_callback=progress_callback)
                 print(f"[灵感线程] init_inspiration_book 返回: {result}")
                 
                 # 保存完成后等待，确保数据已完全写入磁盘
@@ -331,8 +337,13 @@ async def save_inspiration_report(book_id: str):
     # 已填写内容
     lines.append("## 已填写内容\n")
     filled_count = 0
+    book_name_fallback = book_dict.get("name", "")
     for f in field_defs:
         value = collected_info.get(f["key"], "")
+        # 书名兜底：如果collected_info里没有书名，但book_dict有有效书名（不是纯数字ID），使用它
+        if f["key"] == "book_name" and (not value or not str(value).strip()):
+            if book_name_fallback and book_name_fallback != book_id:
+                value = book_name_fallback
         if value and str(value).strip():
             filled_count += 1
             lines.append(f"### {f['name']}\n")
@@ -343,6 +354,10 @@ async def save_inspiration_report(book_id: str):
     missing_count = 0
     for f in field_defs:
         value = collected_info.get(f["key"], "")
+        # 同样应用书名兜底逻辑
+        if f["key"] == "book_name" and (not value or not str(value).strip()):
+            if book_name_fallback and book_name_fallback != book_id:
+                value = book_name_fallback
         if not value or not str(value).strip():
             missing_count += 1
             marker = "⭐" if f["required"] else ""
