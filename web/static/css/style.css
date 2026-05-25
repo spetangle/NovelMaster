@@ -1554,6 +1554,38 @@ body {
     color: var(--warning);
 }
 
+/* 灵感自动补全数据表格 */
+.inspiration-auto-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 6px 0;
+    font-size: 0.8125rem;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.inspiration-auto-table td {
+    padding: 5px 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.inspiration-auto-table tr:last-child td {
+    border-bottom: none;
+}
+
+.insp-field-name {
+    font-weight: 600;
+    color: #a0c4ff;
+    white-space: nowrap;
+    width: 110px;
+}
+
+.insp-field-val {
+    color: #d4d4d4;
+    word-break: break-word;
+}
+
 /* 保存状态提示 */
 .save-status {
     margin-top: 0.5rem;

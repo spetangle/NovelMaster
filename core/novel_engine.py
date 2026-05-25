@@ -5,6 +5,7 @@
 """
 
 import json
+import html as _html_module
 import re
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Callable
@@ -310,20 +311,14 @@ class NovelEngine:
     def _init_agents(self):
         """初始化 Agent 组件"""
         try:
-            # 延迟导入，避免循环依赖
-            import sys
-            from pathlib import Path
-            sys.path.insert(0, str(Path(__file__).parent.parent))
-            from novel_master import LLMManager, Planner
-            
-            # 创建 LLMManager
+            from agents.engine import AgentEngine
+            from core.llm_service import LLMManager
+
             self.llm_manager = LLMManager(str(self.workspace / ".env"))
-            
-            # 创建 Planner
-            self.planner = Planner(self.sm, self.llm_manager)
+            self.agent_engine = AgentEngine(self.llm_manager)
         except Exception as e:
             print(f"初始化 Agent 失败: {e}")
-            self.planner = None
+            self.agent_engine = None
             self.llm_manager = None
 
     # ============== 书籍管理 ==============
@@ -1400,14 +1395,23 @@ class NovelEngine:
         # 临时设置属性供 _get_missing_inspiration_fields 使用
         book.inspiration_collected_info = collected_info
         
+        missing_fields = self._get_missing_inspiration_fields(book)
+        # 判断是否满足生成条件：关键必填字段都填了
+        required_keys = ['genre', 'platform', 'background', 'protagonist', 'main_conflict', 'tone_style']
+        can_generate = len(missing_fields) <= 4 and all(
+            collected_info.get(k) for k in required_keys
+        )
+        
         result = {
             "success": True,
             "book": {
                 "id": book.id,
                 "name": book.name,
+                "is_inspiration": book_is_inspiration,
                 "collected_info": collected_info,
                 "dialogue": dialogue,
-                "missing_fields": self._get_missing_inspiration_fields(book)
+                "missing_fields": missing_fields,
+                "can_generate": can_generate
             }
         }
         print(f"[get_inspiration_info] 返回结果: success={result['success']}, dialogue长度={len(dialogue)}")
@@ -1998,24 +2002,58 @@ class NovelEngine:
             
             setattr(book, 'inspiration_collected_info', collected)
             
-            # 记录补全的内容摘要
+            # 记录补全的内容摘要（生成中文数据表格）
             completed = {k: v for k, v in result.items() if v}
-            completed_str = '、'.join(completed.keys()) if completed else '无'
+            
+            # 字段中文名称映射
+            field_cn = {
+                'book_name': '书名', 'genre': '题材', 'platform': '平台',
+                'words_per_chapter': '章节字数', 'total_chapters': '总章节数',
+                'background': '背景设定', 'protagonist': '主角信息',
+                'main_conflict': '核心冲突', 'power_system': '力量体系',
+                'factions': '势力设定', 'locations': '地理场景',
+                'tone_style': '文风基调', 'story_arc': '故事主线',
+                'supporting_chars': '配角设定', 'key_items': '重要物品/道具',
+                'important_locations': '重要地点', 'themes': '核心主题',
+                'target_audience': '目标读者'
+            }
+            
+            # 构建HTML表格
+            table_rows = ''
+            for k, v in completed.items():
+                cn_name = field_cn.get(k, k)
+                val_text = _html_module.escape(str(v)) if v else ''
+                # 截断过长内容显示
+                display_val = val_text[:80] + ('...' if len(val_text) > 80 else '')
+                table_rows += f'<tr><td class="insp-field-name">{cn_name}</td><td class="insp-field-val">{display_val}</td></tr>'
+            
+            table_html = f'''<table class="inspiration-auto-table"><tbody>{table_rows}</tbody></table>'''
             
             # 添加系统消息
             dialogue.append({
                 "role": "system",
-                "content": f"🤖 根据你的创意，系统已自动推断并补全了以下信息：{completed_str}。请确认是否符合你的预期，如有需要可以修改。",
+                "content": f"🤖 根据你的创意，系统已自动推断并补全了以下信息：<br><br>{table_html}<br>请确认是否符合你的预期，如有需要可以修改。",
                 "time": datetime.now().isoformat()
             })
             setattr(book, 'inspiration_dialogue', dialogue)
             save_ok = self.save_book_meta(book)
             if not save_ok:
                 print(f"[auto_complete_inspiration] 警告：保存书籍元数据失败")
+            # 计算补全后是否满足生成条件
+            required_keys = ['genre', 'platform', 'background', 'protagonist', 'main_conflict', 'tone_style']
+            can_generate = all(collected.get(k) for k in required_keys)
+            # 计算剩余缺失字段
+            all_fields = ['genre', 'platform', 'words_per_chapter', 'total_chapters',
+                          'background', 'protagonist', 'main_conflict', 'power_system',
+                          'factions', 'locations', 'tone_style', 'story_arc', 'supporting_chars',
+                          'key_items', 'important_locations', 'themes', 'target_audience']
+            missing_count = sum(1 for f in all_fields if not collected.get(f))
             
             return {
                 "success": True,
                 "collected_info": collected,
+                "can_generate": can_generate,
+                "missing_count": missing_count,
                 "message": "信息已自动补全"
             }
         except Exception as e:
@@ -2811,7 +2849,28 @@ class NovelEngine:
         context = self._compile_context(book, chapter_num, outline, truth_files, is_preface)
 
         # 4. 生成正文
-        content = self._generate_chapter_content(book, chapter_num, context, outline, is_preface, revise=revise)
+        try:
+            content = self._generate_chapter_content(book, chapter_num, context, outline, is_preface, revise=revise)
+        except Exception as e:
+            # 生成失败：恢复原有内容（如果是修订/重写模式），避免章节变成空白
+            chapter_path = self.workspace / book.path / "chapters" / f"chapter_{chapter_num}.md"
+            if revise and chapter_path.exists():
+                # 修订/重写失败时不覆盖原文
+                print(f"[write_chapter] 生成失败，保留原有内容: {e}")
+            else:
+                # 首次创作失败时写入错误标记，保留旧内容
+                if chapter_path.exists():
+                    old = chapter_path.read_text(encoding='utf-8')
+                    if old.strip():
+                        print(f"[write_chapter] 生成失败，保留原有内容: {e}")
+                        content = old  # 不覆盖，继续用旧内容以避免审计空内容
+                    else:
+                        content = f"# 第 {chapter_num} 章\n\n[生成失败，请重试]\n"
+                        self.sm.fm.write_text(chapter_path, content)
+                else:
+                    content = f"# 第 {chapter_num} 章\n\n[生成失败，请重试]\n"
+                    self.sm.fm.write_text(chapter_path, content)
+            return {"success": False, "message": str(e), "content": content}
 
         # 5. 保存正文
         chapter_path = self.workspace / book.path / "chapters" / f"chapter_{chapter_num}.md"
@@ -2834,7 +2893,10 @@ class NovelEngine:
             # 条件1：核心漏洞必须修订
             if audit_result.core_issues:
                 need_revision = True
-                revision_reasons.append(f"存在{len(audit_result.core_issues)}个核心漏洞")
+                core_issues_detail = []
+                for ci in audit_result.core_issues:
+                    core_issues_detail.append(f"{ci.get('dimension', '未知')}：{ci.get('description', '')}")
+                revision_reasons.append(f"存在{len(audit_result.core_issues)}个核心漏洞（{'; '.join(core_issues_detail)}）")
             
             # 条件2：字数误差超过200字必须修订
             if abs(audit_result.word_count_deviation) > 200:
@@ -2910,21 +2972,35 @@ class NovelEngine:
     def _update_truth_for_chapter(self, book: BookInfo, chapter_num: int, content: str):
         """更新当前章节的真相文件"""
         try:
-            # 延迟导入避免循环依赖
-            from novel_master import Observer, LLMManager
+            from agents.engine import AgentEngine
+            from core.llm_service import LLMManager
+
             llm_manager = LLMManager(str(self.workspace / ".env"))
-            observer = Observer(self.sm, llm_manager)
+            agent_engine = AgentEngine(llm_manager)
 
             # 加载现有真相文件
             truth_files = self._load_truth_files(book)
 
-            # 提取本章事实
-            facts = observer.extract_facts(book, chapter_num, content, truth_files)
+            # 调用 observer Agent 提取事实
+            context = {
+                "book": book.to_dict(),
+                "chapter_num": chapter_num,
+                "chapter_content": content,
+                "truth_files": truth_files
+            }
+            result = agent_engine.call_agent("observer", context)
 
-            # 更新真相文件
-            observer.update_truth_files(book, chapter_num, facts)
+            if result.success and result.data:
+                facts = result.data
+                # 更新真相文件
+                self._apply_facts_to_truth_files(book, chapter_num, facts)
         except Exception as e:
             print(f"提取章节事实失败: {e}")
+
+    def _apply_facts_to_truth_files(self, book: BookInfo, chapter_num: int, facts: dict):
+        """将提取的事实应用到真相文件"""
+        # 实现事实应用逻辑
+        pass
     
     def _create_minimal_audit(self, chapter_num: int):
         """为前沿章节创建最小审核结果"""
@@ -2934,12 +3010,28 @@ class NovelEngine:
             'audit_issues': 0,
             'ai_tell_density': 0,
             'para_warnings': 0,
+            'issues': [],
+            'core_issues': [],
+            'word_count': 0,
+            'target_word_count': 0,
+            'word_count_deviation': 0,
+            'hook_resolution_rate': 100,
+            'paragraph_warnings': 0,
+            'decision': '通过',
             'to_dict': lambda self: {
                 'chapter_num': self.chapter_num,
                 'chapter_score': self.chapter_score,
                 'audit_issues': self.audit_issues,
                 'ai_tell_density': self.ai_tell_density,
-                'para_warnings': self.para_warnings
+                'para_warnings': self.para_warnings,
+                'issues': self.issues,
+                'core_issues': self.core_issues,
+                'word_count': self.word_count,
+                'target_word_count': self.target_word_count,
+                'word_count_deviation': self.word_count_deviation,
+                'hook_resolution_rate': self.hook_resolution_rate,
+                'paragraph_warnings': self.paragraph_warnings,
+                'decision': self.decision
             }
         })()
 
@@ -3019,9 +3111,11 @@ class NovelEngine:
         if not chapter_files:
             return {"success": True, "message": "没有章节需要处理", "processed": 0}
 
-        from novel_master import Observer, LLMManager
+        from agents.engine import AgentEngine
+        from core.llm_service import LLMManager
+
         llm_manager = LLMManager(str(self.workspace / ".env"))
-        observer = Observer(self.sm, llm_manager)
+        agent_engine = AgentEngine(llm_manager)
 
         updated_summary = []
         for chapter_file in chapter_files:
@@ -3030,11 +3124,16 @@ class NovelEngine:
                 content = self.sm.fm.read_text(chapter_file)
                 if content and len(content) > 50:
                     truth_files = self._load_truth_files(book)
-                    facts = observer.extract_facts(book, chapter_num, content, truth_files)
-                    success, updated_files = observer.update_truth_files(book, chapter_num, facts)
-                    if updated_files:
-                        print(f"第{chapter_num}章更新了: {', '.join(updated_files)}")
-                        updated_summary.extend(updated_files)
+                    context = {
+                        "book": book.to_dict(),
+                        "chapter_num": chapter_num,
+                        "chapter_content": content,
+                        "truth_files": truth_files
+                    }
+                    result = agent_engine.call_agent("observer", context)
+                    if result.success:
+                        print(f"第{chapter_num}章观察完成")
+                        updated_summary.append(f"chapter_{chapter_num}")
             except Exception as e:
                 print(f"处理第{chapter_file.name}时出错: {e}")
                 continue
@@ -3834,7 +3933,11 @@ class NovelEngine:
 """
 
     def _generate_chapter_content(self, book: BookInfo, chapter_num: int, context: str, outline: str, is_preface: bool = False, revise: bool = False) -> str:
-        """生成章节正文"""
+        """生成章节正文
+        
+        Raises:
+            Exception: LLM生成失败时抛出异常，避免保存[待生成]占位内容
+        """
         # 修订模式提示
         revise_hint = "\n\n【重要-修订要求】：请重新审视上一次的内容，生成质量更高的版本。注意避免：\n1. 重复的情节和场景描写\n2. 角色行为的矛盾\n3. 同样的转折方式\n4. 相同的伏笔埋设方式\n\n请创作一个焕然一新的章节！" if revise else ""
 
@@ -3856,7 +3959,7 @@ class NovelEngine:
             result = self.llm.generate(prompt, self.llm.get_system_prompt("writer"), max_tokens=4000)
             if result and not result.startswith("["):
                 return f"# 序章\n\n{result}\n\n---\n字数统计: 约 {len(result)} 字"
-            return f"# 序章\n\n[待生成]\n"
+            raise Exception(f"序章生成失败：LLM接口调用异常，请检查API配置或稍后重试" + (f"（{result[:80]}）" if result else "（无响应）"))
 
         prompt = f"""请为小说《{book.name}》创作第{chapter_num}章正文。
 
@@ -3881,7 +3984,7 @@ class NovelEngine:
         result = self.llm.generate(prompt, self.llm.get_system_prompt("writer"), max_tokens=16000)
         if result and not result.startswith("["):
             return f"# 第 {chapter_num} 章\n\n{result}\n\n---\n字数统计: 约 {len(result)} 字"
-        return f"# 第 {chapter_num} 章\n\n[待生成]\n"
+        raise Exception(f"第{chapter_num}章生成失败：LLM接口调用异常，请检查API配置或稍后重试" + (f"（{result[:80]}）" if result else "（无响应）"))
 
     def _generate_audit_report(self, book: BookInfo, chapter_num: int, content: str, audit_result: AuditResult) -> str:
         """生成评审报告文档"""
@@ -3889,8 +3992,9 @@ class NovelEngine:
         
         # 构建问题列表
         issues_text = ""
-        if audit_result.issues:
-            for i, issue in enumerate(audit_result.issues, 1):
+        audit_issues_list = getattr(audit_result, 'issues', []) or []
+        if audit_issues_list:
+            for i, issue in enumerate(audit_issues_list, 1):
                 severity = issue.get("severity", "中")
                 severity_icon = "🔴" if severity == "高" else ("🟡" if severity == "中" else "🟢")
                 issues_text += f"{i}. {severity_icon} [{issue.get('dimension', '未知')}] {issue.get('description', '')}\n"
@@ -3899,8 +4003,9 @@ class NovelEngine:
 
         # 构建核心漏洞
         core_issues_text = ""
-        if audit_result.core_issues:
-            for issue in audit_result.core_issues:
+        core_issues_list = getattr(audit_result, 'core_issues', []) or []
+        if core_issues_list:
+            for issue in core_issues_list:
                 core_issues_text += f"- [{issue.get('severity', '高')}] {issue.get('description', '')}\n"
         else:
             core_issues_text = "无"

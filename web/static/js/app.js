@@ -640,7 +640,9 @@ async function loadMoreMessages() {
     // 在顶部插入消息
     const firstMsg = messages.querySelector('.chat-message');
     for (const msg of messagesToShow.reverse()) {
-        renderMessage(msg.type, msg.content, msg.time, true);
+        // 优先用 fullTime（完整日期时间）解析，time 可能只是 "15:38" 格式无法被 new Date() 解析
+        const renderTime = msg.fullTime || msg.time;
+        renderMessage(msg.type, msg.content, renderTime, true);
         chatHistory.unshift(msg);
     }
     
@@ -838,10 +840,7 @@ async function showGuidance(context, currentDocKey = null) {
         const chaptersRes = await api(`/api/books/${currentBook.id}/chapters`);
         const hasChapters = chaptersRes.success && chaptersRes.chapters && chaptersRes.chapters.length > 0;
         
-        if (hasChapters) {
-            // 有章节，显示续写/评审引导
-            addAIMessage(`📚 书籍《${currentBook.name}》已就绪，输入"续写"开始创作下一章`);
-        } else {
+        if (!hasChapters) {
             // 没有章节，显示新书引导
             addAIMessage(`🎉 基础设定已完成，输入"续写"开始创作正文`);
         }
@@ -2677,7 +2676,16 @@ async function pollTaskStatus(taskId) {
                     }
                 }
             } else {
-                addSystemMessage(`❌ ${task.result.message || '任务失败'}`);
+                // 任务失败：显示失败消息 + 核心漏洞详情（如果有）
+                let failMsg = `❌ ${task.result.message || '任务失败'}`;
+                const ar = task.result.audit_result;
+                if (ar && ar.core_issues && ar.core_issues.length > 0) {
+                    failMsg += '\n\n🔴 **核心漏洞详情：**';
+                    ar.core_issues.forEach((ci, i) => {
+                        failMsg += `\n  ${i + 1}. [${ci.severity || '高'}] ${ci.dimension || ''}：${ci.description || ''}`;
+                    });
+                }
+                addSystemMessage(failMsg);
             }
         } else {
             addSystemMessage(`✅ 任务完成: ${task.message}`);
@@ -3192,9 +3200,12 @@ async function loadInspirationDialogue(bookId) {
                     dialogue.forEach(msg => {
                         const msgClass = msg.role === 'user' ? 'user-message' : 
                                          msg.role === 'system' ? 'system-message' : 'ai-message';
+                        // 系统消息如果包含灵感补全表格，作为HTML渲染
+                        const isInspTable = msg.role === 'system' && msg.content.includes('inspiration-auto-table');
+                        const contentHtml = isInspTable ? msg.content : escapeHtml(msg.content);
                         messagesContainer.innerHTML += `
                             <div class="message ${msgClass}">
-                                <div class="message-content">${escapeHtml(msg.content)}</div>
+                                <div class="message-content">${contentHtml}</div>
                             </div>
                         `;
                     });
@@ -3301,6 +3312,23 @@ async function loadInspirationDialogue(bookId) {
                 }
                 
                 console.log('[loadInspirationDialogue] 灵感输入区域创建完成');
+            }
+            
+            // 根据收集情况决定按钮显示
+            const canGenerate = bookData.can_generate;
+            const actionBtn = document.getElementById('inspiration-action-btn');
+            const autoBtn = document.getElementById('auto-complete-btn');
+            const missingCount = (bookData.missing_fields || []).length;
+            
+            // 判断文档是否已生成（is_inspiration 在生成后会设为 false，但如果刚重启可能还是 true）
+            if (actionBtn) {
+                if (canGenerate) {
+                    actionBtn.style.display = 'inline-block';
+                    // 如果已全部补全，隐藏"剩下交给你了"
+                    if (autoBtn && missingCount === 0) {
+                        autoBtn.style.display = 'none';
+                    }
+                }
             }
         }
     } catch (error) {
@@ -3561,9 +3589,13 @@ async function autoCompleteInspiration() {
 
             updateInspirationProgress(res.collected_info || {}, []);
 
-            // 如果可以生成，显示按钮
+            // 如果可以生成，显示按钮；如果全部补全，隐藏自动补全按钮
             const actionBtn = document.getElementById('inspiration-action-btn');
+            const autoBtn = document.getElementById('auto-complete-btn');
             if (actionBtn) actionBtn.style.display = 'inline-block';
+            if (autoBtn && res.can_generate && (res.missing_count !== undefined ? res.missing_count === 0 : true)) {
+                autoBtn.style.display = 'none';
+            }
         } else {
             messagesContainer.innerHTML += `
                 <div class="message system-message">

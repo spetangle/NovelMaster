@@ -405,3 +405,36 @@ class GlobalConfig:
             default_words_per_chapter=data.get("default_words_per_chapter", 3000),
             default_temperature=data.get("default_temperature", 0.7)
         )
+
+
+# ============== 额外的枚举和辅助类 ==============
+
+class GenreType(Enum):
+    """题材类型"""
+    XUANHUAN = "玄幻"
+    XIANXIA = "仙侠"
+    DUSHI = "都市"
+    KEHUAN = "科幻"
+    QINGCHUN = "青春校园"
+    CUSTOM = "自定义"
+
+
+class AgentRole:
+    """Agent 角色定义"""
+    PLANNER = "planner"
+    ARCHITECT = "architect"
+    WRITER = "writer"
+    AUDITOR = "auditor"
+    OBSERVER = "observer"
+    HOOK_MANAGER = "hook_manager"
+    CONTINUITY_AUDITOR = "continuity_auditor"
+    GLOBAL_EDITOR = "global_editor"
+    RADAR = "radar"
+
+
+class WorkflowType:
+    """工作流类型"""
+    BOOK_CREATION = "book_creation"
+    CHAPTER_WRITING = "chapter_writing"
+    AUDIT = "audit"
+    GOLDEN_AUDIT = "golden_audit"

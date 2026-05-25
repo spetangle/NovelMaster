@@ -1133,7 +1133,7 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
 
                 # 创作完成后自动评审
                 chapter_info = engine.get_chapter_content(data.book_id, chapter_num)
-                content = chapter_info.get('content', '') if chapter_info.get('success') else ''
+                content = chapter_info.get('chapter', {}).get('content', '') if chapter_info.get('success') else ''
                 truth_files = engine._load_truth_files(book)
 
                 retry_count = 0
@@ -1219,7 +1219,7 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
 
                         # 获取修订后的内容
                         chapter_info = engine.get_chapter_content(data.book_id, chapter_num)
-                        content = chapter_info.get('content', '') if chapter_info.get('success') else ''
+                        content = chapter_info.get('chapter', {}).get('content', '') if chapter_info.get('success') else ''
 
                 task_manager.update_task(task.id, progress=85,
                                         message=f"正在保存{chapter_title}内容...", step="保存内容")
@@ -1248,7 +1248,7 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
 
                 # 评审：获取章节内容并审核
                 chapter_info = engine.get_chapter_content(data.book_id, chapter_num)
-                content = chapter_info.get('content', '') if chapter_info.get('success') else ''
+                content = chapter_info.get('chapter', {}).get('content', '') if chapter_info.get('success') else ''
 
                 task_manager.update_task(task.id, progress=40,
                                         message=f"正在分析{chapter_title}内容...", step="分析内容")

@@ -48,3 +48,6 @@ books/
 llm_config.json
 llm_providers.json
 workspace/
+
+# Claude
+.claude/

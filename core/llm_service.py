@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 LLM服务封装
+包含配置、客户端、管理器等
 """
 
 import json
@@ -8,6 +9,248 @@ import time
 from typing import Optional, Dict, Tuple, List
 from pathlib import Path
 from dataclasses import dataclass, field
+
+
+# ============== LLM 配置 ==============
+
+@dataclass
+class LLMConfig:
+    """大模型配置"""
+    api_key: str = ""
+    base_url: str = "https://api.deepseek.com/v1"
+    model: str = "deepseek-chat"
+    max_tokens: int = 8192
+    temperature: float = 0.7
+    timeout: int = 120
+    retry_times: int = 3
+    retry_delay: float = 2.0
+
+    @classmethod
+    def from_env(cls, path: str = ".env") -> 'LLMConfig':
+        """从 .env 文件加载配置"""
+        env_path = Path(path)
+        if not env_path.exists():
+            return cls()
+
+        config = cls()
+        with open(env_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+
+                    if key == "LLM_API_KEY":
+                        config.api_key = value
+                    elif key == "LLM_BASE_URL":
+                        config.base_url = value
+                    elif key == "LLM_MODEL":
+                        config.model = value
+                    elif key == "LLM_MAX_TOKENS":
+                        config.max_tokens = int(value) if value else 8192
+                    elif key == "LLM_TEMPERATURE":
+                        config.temperature = float(value) if value else 0.7
+                    elif key == "LLM_TIMEOUT":
+                        config.timeout = int(value) if value else 120
+                    elif key == "LLM_RETRY_TIMES":
+                        config.retry_times = int(value) if value else 3
+                    elif key == "LLM_RETRY_DELAY":
+                        config.retry_delay = float(value) if value else 2.0
+        return config
+
+    def save_env(self, path: str = ".env") -> bool:
+        """保存配置到 .env 文件"""
+        try:
+            lines = [
+                "# LLM Configuration",
+                f"LLM_API_KEY={self.api_key}",
+                f"LLM_BASE_URL={self.base_url}",
+                f"LLM_MODEL={self.model}",
+                f"LLM_MAX_TOKENS={self.max_tokens}",
+                f"LLM_TEMPERATURE={self.temperature}",
+                f"LLM_TIMEOUT={self.timeout}",
+                f"LLM_RETRY_TIMES={self.retry_times}",
+                f"LLM_RETRY_DELAY={self.retry_delay}",
+            ]
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+            return True
+        except Exception:
+            return False
+
+
+# ============== LLM 客户端 ==============
+
+class LLMClient:
+    """大模型调用客户端"""
+
+    def __init__(self, config: Optional[LLMConfig] = None):
+        self.config = config or LLMConfig()
+
+    def call(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        json_mode: bool = False,
+        **kwargs
+    ) -> Tuple[bool, str]:
+        """
+        调用大模型
+
+        Args:
+            prompt: 用户提示词
+            system_prompt: 系统提示词
+            json_mode: 是否返回JSON格式
+            **kwargs: 其他参数覆盖
+
+        Returns:
+            (成功标志, 响应内容或错误信息)
+        """
+        import urllib.request
+        import urllib.error
+
+        params = {
+            "model": kwargs.get("model", self.config.model),
+            "messages": [],
+            "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
+            "temperature": kwargs.get("temperature", self.config.temperature),
+        }
+
+        if system_prompt:
+            params["messages"].append({"role": "system", "content": system_prompt})
+        params["messages"].append({"role": "user", "content": prompt})
+
+        if json_mode:
+            params["response_format"] = {"type": "json_object"}
+
+        payload = json.dumps(params).encode('utf-8')
+
+        for attempt in range(self.config.retry_times):
+            try:
+                req = urllib.request.Request(
+                    f"{self.config.base_url}/chat/completions",
+                    data=payload,
+                    headers={
+                        "Authorization": f"Bearer {self.config.api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    method="POST"
+                )
+
+                with urllib.request.urlopen(req, timeout=self.config.timeout) as response:
+                    result = json.loads(response.read().decode('utf-8'))
+
+                    if "choices" in result and len(result["choices"]) > 0:
+                        content = result["choices"][0]["message"]["content"]
+                        return True, content
+
+                return False, "响应格式异常"
+
+            except urllib.error.URLError as e:
+                if attempt < self.config.retry_times - 1:
+                    time.sleep(self.config.retry_delay)
+                    continue
+                return False, f"网络错误: {str(e)}"
+            except Exception as e:
+                return False, f"调用失败: {str(e)}"
+
+        return False, "重试次数耗尽"
+
+
+# ============== LLM 管理器 ==============
+
+class LLMManager:
+    """大模型管理器"""
+
+    DEFAULT_CONFIG_PATH = ".env"
+
+    def __init__(self, config_path: Optional[str] = None):
+        self.config_path = config_path or self.DEFAULT_CONFIG_PATH
+        self.config = self._load_config()
+        self.client = LLMClient(self.config)
+        self._token_usage = {"prompt_tokens": 0, "completion_tokens": 0}
+
+    def _load_config(self) -> LLMConfig:
+        """加载配置"""
+        if Path(self.config_path).exists():
+            return LLMConfig.from_env(self.config_path)
+        return LLMConfig()
+
+    def save_config(self) -> bool:
+        """保存配置"""
+        return self.config.save_env(self.config_path)
+
+    def update_config(self, **kwargs):
+        """更新配置"""
+        for key, value in kwargs.items():
+            if hasattr(self.config, key):
+                setattr(self.config, key, value)
+
+    def generate(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        agent_name: str = "System",
+        **kwargs
+    ) -> str:
+        """生成内容"""
+        print(f"[LLM] {agent_name} 正在生成...")
+        success, result = self.client.call(prompt, system_prompt, **kwargs)
+
+        if success:
+            print(f"[LLM] {agent_name} 生成完成 ({len(result)} 字符)")
+            return result
+        else:
+            print(f"[LLM] {agent_name} 生成失败: {result}")
+            return f"[生成失败: {result}]"
+
+    def generate_json(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        agent_name: str = "System",
+        **kwargs
+    ) -> Optional[Dict]:
+        """生成JSON格式响应"""
+        success, result = self.client.call(prompt, system_prompt, json_mode=True, **kwargs)
+
+        if success:
+            try:
+                text = result.strip()
+                if text.startswith("```json"):
+                    text = text[7:]
+                if text.startswith("```"):
+                    text = text[3:]
+                if text.endswith("```"):
+                    text = text[:-3]
+                return json.loads(text.strip())
+            except json.JSONDecodeError:
+                print(f"[LLM] JSON解析失败，原始响应: {result[:200]}")
+                return None
+        return None
+
+    def batch_generate(
+        self,
+        prompts: List[str],
+        system_prompt: str = "",
+        agent_name: str = "System",
+        delay: float = 1.0
+    ) -> List[str]:
+        """批量生成"""
+        results = []
+        for i, prompt in enumerate(prompts):
+            print(f"[LLM] {agent_name} 批量生成 {i+1}/{len(prompts)}")
+            result = self.generate(prompt, system_prompt, agent_name)
+            results.append(result)
+            if i < len(prompts) - 1:
+                time.sleep(delay)
+        return results
+
+
+# ============== LLM 服务（原 LLMService 类） ==============
 
 
 @dataclass
