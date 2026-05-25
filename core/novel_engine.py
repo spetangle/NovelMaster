@@ -2809,13 +2809,14 @@ class NovelEngine:
 
     # ============== 章节创作 ==============
 
-    def write_chapter(self, chapter_num: int, revise: bool = False) -> Dict[str, Any]:
+    def write_chapter(self, chapter_num: int, revise: bool = False, regenerate: bool = False) -> Dict[str, Any]:
         """
         章节创作工作流
 
         Args:
             chapter_num: 章节编号 (0=前言, 1+=正文)
-            revise: 是否为修订模式（修订模式会重新生成细纲和内容）
+            revise: 是否为修订模式（基于上一次细纲和评审报告修改内容）
+            regenerate: 是否为重写模式（从细纲开始重新生成）
 
         Returns:
             章节创作结果
@@ -2828,17 +2829,27 @@ class NovelEngine:
         is_preface = (chapter_num == 0)
         chapter_title = "序章" if is_preface else f"第{chapter_num}章"
 
-        # 0. 获取上一次评审报告（修订时使用）
+        # 0. 获取上一次评审报告和细纲（修订时使用）
         previous_audit_report = ""
+        previous_outline = ""
         if revise and not is_preface:
             previous_audit_report = self.get_latest_audit_report(book, chapter_num)
+            # 加载上一次生成的细纲
+            outline_path = self.workspace / book.path / "chapters" / f"outline_{chapter_num}.md"
+            if outline_path.exists():
+                previous_outline = self.sm.fm.read_text(outline_path)
 
-        # 1. 生成章节细纲（前沿不需要细纲，修订模式需要重新生成）
+        # 1. 生成章节细纲
         if is_preface:
             outline = "【序章章节，无需细纲】"
-        elif revise:
-            # 修订模式：重新生成细纲
+        elif regenerate:
+            # 重写模式：从头开始重新生成细纲
             outline = self._generate_chapter_outline(book, chapter_num, regenerate=True)
+        elif revise and previous_outline:
+            # 修订模式：基于上一次细纲修改
+            outline = self._generate_chapter_outline(book, chapter_num, regenerate=True,
+                                                      previous_outline=previous_outline,
+                                                      previous_audit=previous_audit_report)
         else:
             outline = self._generate_chapter_outline(book, chapter_num)
 
@@ -2850,7 +2861,7 @@ class NovelEngine:
 
         # 4. 生成正文
         try:
-            content = self._generate_chapter_content(book, chapter_num, context, outline, is_preface, revise=revise)
+            content = self._generate_chapter_content(book, chapter_num, context, outline, is_preface, revise=revise, revise_reference=previous_audit_report)
         except Exception as e:
             # 生成失败：恢复原有内容（如果是修订/重写模式），避免章节变成空白
             chapter_path = self.workspace / book.path / "chapters" / f"chapter_{chapter_num}.md"
@@ -3727,15 +3738,34 @@ class NovelEngine:
 """
 
     def _generate_chapter_outline(self, book: BookInfo, chapter_num: int, regenerate: bool = False,
-                                  previous_audit: str = "") -> str:
-        """生成章节细纲"""
+                                  previous_audit: str = "", previous_outline: str = "") -> str:
+        """生成章节细纲
+
+        Args:
+            previous_audit: 上一次评审报告（用于修订模式）
+            previous_outline: 上一次生成的细纲（用于修订模式，基于原细纲修改）
+        """
         truth_files = self._load_truth_files(book)
         chapter_title = "序章" if chapter_num == 0 else f"第{chapter_num}章"
 
         # 构建修订提示
         revise_hint = ""
         if regenerate:
-            if previous_audit:
+            if previous_outline:
+                # 修订模式：基于上一次细纲修改
+                revise_hint = f"""
+
+【上一次细纲参考】：
+{previous_outline}
+"""
+                if previous_audit:
+                    revise_hint += f"""
+
+【上一次评审报告参考】：
+{previous_audit}
+
+请根据评审意见修改细纲，修复问题后生成新的细纲。"""
+            elif previous_audit:
                 revise_hint = f"""
 
 【上一次评审报告参考】：
@@ -3932,14 +3962,40 @@ class NovelEngine:
 {outline}
 """
 
-    def _generate_chapter_content(self, book: BookInfo, chapter_num: int, context: str, outline: str, is_preface: bool = False, revise: bool = False) -> str:
+    def _generate_chapter_content(self, book: BookInfo, chapter_num: int, context: str, outline: str, is_preface: bool = False, revise: bool = False, revise_reference: str = "") -> str:
         """生成章节正文
-        
+
+        Args:
+            revise_reference: 修订参考内容，可以是上一次评审报告、用户输入等
         Raises:
             Exception: LLM生成失败时抛出异常，避免保存[待生成]占位内容
         """
         # 修订模式提示
-        revise_hint = "\n\n【重要-修订要求】：请重新审视上一次的内容，生成质量更高的版本。注意避免：\n1. 重复的情节和场景描写\n2. 角色行为的矛盾\n3. 同样的转折方式\n4. 相同的伏笔埋设方式\n\n请创作一个焕然一新的章节！" if revise else ""
+        if revise:
+            if revise_reference:
+                revise_hint = f"""
+
+【修订参考内容】：
+{revise_reference}
+
+【修订要求】：
+请根据上述修订参考内容，重新创作本章内容。注意：
+1. 修复参考内容中指出的问题
+2. 避免重复上一次的问题
+3. 创作一个焕然一新的版本
+"""
+            else:
+                revise_hint = """
+
+【重要-修订要求】：请重新审视上一次的内容，生成质量更高的版本。注意避免：
+1. 重复的情节和场景描写
+2. 角色行为的矛盾
+3. 同样的转折方式
+4. 相同的伏笔埋设方式
+
+请创作一个焕然一新的章节！"""
+        else:
+            revise_hint = ""
 
         if is_preface:
             prompt = f"""请为小说《{book.name}》创作序章。
@@ -4184,7 +4240,7 @@ class NovelEngine:
         context = self._compile_context(book, chapter_num, outline, truth_files, is_preface)
         
         # 3. 生成正文
-        content = self._generate_chapter_content(book, chapter_num, context, outline, is_preface, revise=revise)
+        content = self._generate_chapter_content(book, chapter_num, context, outline, is_preface, revise=revise, revise_reference=previous_audit_report)
         
         # 4. 评审
         if is_preface:
@@ -4236,8 +4292,8 @@ class NovelEngine:
             context = self._compile_context(book, chapter_num, outline, truth_files, is_preface)
             
             # 重新生成正文
-            content = self._generate_chapter_content(book, chapter_num, context, outline, 
-                                                   is_preface, revise=True)
+            content = self._generate_chapter_content(book, chapter_num, context, outline,
+                                                   is_preface, revise=True, revise_reference=revision_feedback)
             
             # 评审修订后的内容
             audit_result = self._audit_chapter(book, chapter_num, content, truth_files, revision_feedback)

@@ -618,17 +618,19 @@ async def update_global_config(data: dict = None):
 
 class WriteChapterRequest(BaseModel):
     chapter_num: int = 1
+    revise: bool = False       # 修订模式：基于上一次细纲和评审报告修改
+    regenerate: bool = False    # 重写模式：从细纲开始重新生成
 
 
 @router.post("/chapters/write")
 async def write_chapter(data: WriteChapterRequest):
     """创作章节"""
     chapter_num = data.chapter_num
-    
+
     if not isinstance(chapter_num, int) or chapter_num < 1:
         raise HTTPException(status_code=400, detail="章节号必须为正整数")
-    
-    result = engine.write_chapter(chapter_num)
+
+    result = engine.write_chapter(chapter_num, revise=data.revise, regenerate=data.regenerate)
     return result
 
 

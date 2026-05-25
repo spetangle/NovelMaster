@@ -21,7 +21,7 @@ class LLMConfig:
     model: str = "deepseek-chat"
     max_tokens: int = 8192
     temperature: float = 0.7
-    timeout: int = 120
+    timeout: int = 600  # 默认10分钟超时
     retry_times: int = 3
     retry_delay: float = 2.0
 
@@ -263,7 +263,7 @@ class ProviderConfig:
     model: str = ""
     max_tokens: int = 8192
     temperature: float = 0.7
-    timeout: int = 300
+    timeout: int = 600  # 默认10分钟超时
     retry_times: int = 3
     retry_delay: float = 2.0
     enabled: bool = True

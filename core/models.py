@@ -239,7 +239,7 @@ class AuditResult:
         score -= self.audit_issues * 5
         score -= self.ai_tell_density * 20
         score -= self.paragraph_warnings * 3
-        self.chapter_score = max(0, min(100, score))
+        self.chapter_score = max(0, min(100, int(round(score))))
 
         # 核心漏洞必须修订（无论分数多高）
         has_core_issues = len(self.core_issues) > 0
