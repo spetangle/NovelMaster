@@ -88,6 +88,11 @@ class ChapterWritingWorkflow:
             })
             outline = architect_result.content if architect_result.success else ""
 
+            # 保存章节细纲
+            if outline:
+                outline_path = self.sm.workspace / book.path / "chapters" / f"outline_{chapter_num}.md"
+                self.sm.fm.write_text(outline_path, outline)
+
             # Step 3: 创作正文
             report(f"创作{chapter_title}", 30, "正在创作章节正文...")
             if is_cancelled():
@@ -152,6 +157,8 @@ class ChapterWritingWorkflow:
                 "success": True,
                 "chapter_num": chapter_num,
                 "chapter_title": chapter_title,
+                "outline": outline,
+                "outline_path": str(outline_path) if outline else None,
                 "content": chapter_content,
                 "audit_result": audit_data,
                 "score": score,
