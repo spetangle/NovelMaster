@@ -747,7 +747,7 @@ class LLMService:
             "temperature": kwargs.get("temperature", self.config.temperature),
         }
         # 自定义超时（章节生成等耗时任务可传入更长超时）
-        call_timeout = kwargs.get("timeout", self.config.timeout)
+        call_timeout = max(kwargs.get("timeout", self.config.timeout), 600)
 
         if system_prompt:
             params["messages"].append({"role": "system", "content": system_prompt})
@@ -757,6 +757,8 @@ class LLMService:
             params["response_format"] = {"type": "json_object"}
 
         payload = json.dumps(params).encode('utf-8')
+
+        print(f"[LLM] [{agent_name}] 开始请求 (超时: {call_timeout}s)...")
 
         for attempt in range(self.config.retry_times):
             try:
@@ -785,6 +787,7 @@ class LLMService:
                             "User Prompt": prompt[:2000],
                             "Response (raw)": raw_content[:3000]
                         })
+                        print(f"[LLM] [{agent_name}] 生成完成 ({len(content)} 字符)")
                         return True, content
 
                 # 记录失败日志
@@ -793,6 +796,7 @@ class LLMService:
                     "Model": params["model"],
                     "Response": str(result)
                 })
+                print(f"[LLM] [{agent_name}] 响应格式异常")
                 return False, "响应格式异常"
 
             except urllib.error.URLError as e:
@@ -806,6 +810,7 @@ class LLMService:
                     "Error": f"网络错误: {str(e)}",
                     "Attempt": attempt + 1
                 })
+                print(f"[LLM] [{agent_name}] 网络错误: {str(e)}")
                 return False, f"网络错误: {str(e)}"
             except Exception as e:
                 # 记录异常日志
@@ -814,6 +819,7 @@ class LLMService:
                     "Model": params["model"],
                     "Error": f"调用失败: {str(e)}"
                 })
+                print(f"[LLM] [{agent_name}] 调用异常: {str(e)}")
                 return False, f"调用失败: {str(e)}"
 
         self._write_log(f"LLM重试耗尽 [{agent_name}]", {
@@ -821,6 +827,7 @@ class LLMService:
             "Model": params["model"],
             "Retries": self.config.retry_times
         })
+        print(f"[LLM] [{agent_name}] 重试次数耗尽")
         return False, "重试次数耗尽"
 
     def call_stream(
@@ -849,14 +856,17 @@ class LLMService:
             "temperature": kwargs.get("temperature", self.config.temperature),
             "stream": True,  # 启用流式
         }
+        call_timeout = max(kwargs.get("timeout", self.config.timeout), 600)
 
         if system_prompt:
             params["messages"].append({"role": "system", "content": system_prompt})
         params["messages"].append({"role": "user", "content": prompt})
 
         payload = json.dumps(params).encode('utf-8')
-        
+
         full_content = []
+
+        print(f"[LLM] [{agent_name}] 开始流式请求...")
 
         for attempt in range(self.config.retry_times):
             try:
@@ -870,7 +880,7 @@ class LLMService:
                     method="POST"
                 )
 
-                with urllib.request.urlopen(req, timeout=self.config.timeout) as response:
+                with urllib.request.urlopen(req, timeout=call_timeout) as response:
                     # 流式读取响应
                     for line in response:
                         line = line.decode('utf-8').strip()
@@ -905,6 +915,7 @@ class LLMService:
                     "Response Length (raw)": len(raw_content),
                     "Response Length (cleaned)": len(content)
                 })
+                print(f"[LLM] [{agent_name}] 流式完成 ({len(content)} 字符)")
                 return True, content
 
             except urllib.error.URLError as e:
@@ -916,6 +927,7 @@ class LLMService:
                     "Model": params["model"],
                     "Error": f"网络错误: {str(e)}"
                 })
+                print(f"[LLM] [{agent_name}] 流式网络错误: {str(e)}")
                 return False, f"网络错误: {str(e)}"
             except Exception as e:
                 self._write_log(f"LLM流式调用异常 [{agent_name}]", {
@@ -923,8 +935,10 @@ class LLMService:
                     "Model": params["model"],
                     "Error": f"调用失败: {str(e)}"
                 })
+                print(f"[LLM] [{agent_name}] 流式异常: {str(e)}")
                 return False, f"调用失败: {str(e)}"
 
+        print(f"[LLM] [{agent_name}] 流式重试耗尽")
         return False, "重试次数耗尽"
 
     def generate(

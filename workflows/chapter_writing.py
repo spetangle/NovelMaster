@@ -3,6 +3,7 @@
 章节创作工作流
 """
 
+import re
 from typing import Dict, Any, Optional, Callable
 from datetime import datetime
 from pathlib import Path
@@ -116,7 +117,7 @@ class ChapterWritingWorkflow:
             if not writer_result.success:
                 return {"success": False, "message": "章节创作失败"}
 
-            chapter_content = writer_result.content
+            chapter_content = self._filter_llm_output(writer_result.content)
 
             # Step 4: 保存章节
             report(f"保存{chapter_title}", 50, "正在保存章节内容...")
@@ -193,6 +194,46 @@ class ChapterWritingWorkflow:
             import traceback
             traceback.print_exc()
             return {"success": False, "message": f"创作失败: {str(e)}"}
+
+    def _filter_llm_output(self, content: str) -> str:
+        """过滤LLM输出的说明性内容，只保留章节正文"""
+        # 移除 LOG 块（多个短横线包围的内容，多行）
+        content = re.sub(r'━{3,}\s*\n(?:.*?\n)*?.*?━{3,}', '', content, flags=re.DOTALL)
+
+        # 移除 [LOG] 块（标准格式）
+        content = re.sub(r'\[LOG\][^\[]*?(?=\[LOG\]|$)', '', content, flags=re.DOTALL)
+
+        # 移除 "以下是..." 类引导语
+        content = re.sub(r'^以下(是|为).*?[:：]\s*', '', content, flags=re.MULTILINE)
+
+        # 移除行首的任务说明标签
+        content = re.sub(r'^\[LOG\].*$', '', content, flags=re.MULTILINE)
+        content = re.sub(r'^任务名称:.*$', '', content, flags=re.MULTILINE)
+        content = re.sub(r'^当前 Agent:.*$', '', content, flags=re.MULTILINE)
+        content = re.sub(r'^当前阶段:.*$', '', content, flags=re.MULTILINE)
+        content = re.sub(r'^预计产出:.*$', '', content, flags=re.MULTILINE)
+
+        # 移除 "缩写原则"、"扩写原则" 等说明段落
+        content = re.sub(r'^(缩|扩)写原则.*$(?:\n(?![①②③④⑤⑥⑦⑧⑨⑩]|\d+\.).*$)', '', content, flags=re.MULTILINE)
+
+        # 移除 "字数要求"、"输出规范"、"调用规范" 等说明段落
+        content = re.sub(r'^(字数要求|输出规范|调用规范).*$(?:\n(?![①②③④⑤⑥⑦⑧⑨⑩]|\d+\.).*$)', '', content, flags=re.MULTILINE)
+
+        # 移除 AI 思考过程标签
+        content = re.sub(r'<think>[\s\S]*?', '', content, flags=re.DOTALL)
+
+        # 移除 markdown 代码块
+        content = re.sub(r'```[\s\S]*?```', '', content)
+
+        # 清理多余的空行
+        content = re.sub(r'\n{3,}', '\n\n', content)
+
+        # 移除行首和行尾空白
+        lines = content.split('\n')
+        lines = [line.strip() for line in lines]
+        content = '\n'.join(line for line in lines if line)
+
+        return content
 
     def _load_truth_files(self, book: BookInfo) -> Dict[str, str]:
         """加载真相文件"""

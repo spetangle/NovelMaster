@@ -923,7 +923,7 @@ async def batch_write_chapters(data: BatchWriteRequest):
 
 @router.get("/books/{book_id}")
 async def get_book_detail(book_id: str):
-    """获取书籍详情（包含文档状态）"""
+    """获取书籍详情（包含文档状态和主角信息）"""
     book = engine.get_book(book_id)
     if not book:
         raise HTTPException(status_code=404, detail="书籍不存在")
@@ -939,10 +939,24 @@ async def get_book_detail(book_id: str):
         'current_focus_exists': (book_path / "current_focus.md").exists()
     }
 
+    # 读取主角信息
+    protagonist_info = ""
+    characters_path = book_path / "characters.md"
+    if characters_path.exists():
+        content = characters_path.read_text(encoding='utf-8')
+        import re
+        # 提取主角名和性别
+        name_match = re.search(r'## 主角[：:]?\s*(\S+)', content)
+        gender_match = re.search(r'性别[：:]?\s*(\S+)', content)
+        name = name_match.group(1) if name_match else ""
+        gender = gender_match.group(1) if gender_match else ""
+        if name:
+            protagonist_info = f"{name} {gender}" if gender else name
+
     book_data = book.to_dict() if hasattr(book, 'to_dict') else book
     return {
         "success": True,
-        "book": {**book_data, **docs_status}
+        "book": {**book_data, **docs_status, "protagonist_info": protagonist_info}
     }
 
 
@@ -1113,7 +1127,7 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
         )
     
     # 创建后台任务
-    task = task_manager.create_task(f"{action_name}第{chapter_num}章")
+    task = task_manager.create_task(f"{action_name}第{chapter_num}章", book_id=data.book_id, task_type="write_chapter")
     
     # 锁定章节
     task_manager.lock_chapter(data.book_id, chapter_num, task.id)
@@ -1436,7 +1450,7 @@ async def auto_write(data: AutoWriteRequest):
     end_chapter = start_chapter + data.chapter_count - 1
     
     # 创建任务
-    task = task_manager.create_task(f"自动续写 {data.book_id} 第{start_chapter}-{end_chapter}章", book_id=data.book_id)
+    task = task_manager.create_task(f"自动续写 {data.book_id} 第{start_chapter}-{end_chapter}章", book_id=data.book_id, task_type="auto_write")
     
     # 后台运行
     def run():

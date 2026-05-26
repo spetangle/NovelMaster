@@ -449,15 +449,28 @@ async function checkAndResumeCreatingTask(bookId) {
         const res = await api('/api/tasks');
         if (res.success && res.tasks) {
             // 查找与当前书籍相关的创建任务
-            const createTask = res.tasks.find(task => 
-                task.type === 'create_book' && 
+            const createTask = res.tasks.find(task =>
+                task.type === 'create_book' &&
                 task.book_id === bookId &&
-                task.status === 'running'
+                (task.status === 'running' || task.status === 'pending')
             );
-            
+
             if (createTask) {
                 addSystemMessage(`📚 检测到书籍仍在创建中，正在恢复进度...`);
-                startTaskPolling(createTask.task_id);
+                startTaskPolling(createTask.id);
+                return;
+            }
+
+            // 检查是否有章节创作任务也在进行
+            const writeTask = res.tasks.find(task =>
+                (task.type === 'write_chapter' || task.type === 'auto_write') &&
+                task.book_id === bookId &&
+                (task.status === 'running' || task.status === 'pending')
+            );
+
+            if (writeTask) {
+                addSystemMessage(`✍️ 检测到章节创作任务正在进行，正在恢复进度...`);
+                startTaskPolling(writeTask.id);
             }
         }
     } catch (e) {
@@ -484,6 +497,10 @@ async function updateBookInfoSection() {
 
     const totalChapters = currentBook.total_chapters;
     document.getElementById('book-info-chapters').textContent = totalChapters ? `${totalChapters}章` : '-';
+
+    // 更新主角信息
+    const protagonistInfo = currentBook.protagonist_info || '-';
+    document.getElementById('book-info-protagonist').textContent = protagonistInfo;
 
     // 检查灵感模式状态
     await checkInspirationStatus();

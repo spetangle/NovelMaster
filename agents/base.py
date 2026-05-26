@@ -89,6 +89,8 @@ class UniversalAgent:
             # 获取替换后的系统提示词（注入书籍配置）
             system_prompt = self._inject_book_config(context)
 
+            print(f"[Agent] {self.role.name} 开始执行...")
+
             # 调用 LLM
             if self.role.output_format == "json":
                 response = self.llm.generate_json(prompt, system_prompt, self.role.name)
@@ -96,17 +98,23 @@ class UniversalAgent:
                     result.content = json.dumps(response, ensure_ascii=False)
                     result.data = response
                     result.success = True
+                    print(f"[Agent] {self.role.name} 执行完成 (JSON)")
                 else:
                     result.error = "JSON 解析失败"
+                    print(f"[Agent] {self.role.name} JSON解析失败")
             else:
                 response = self.llm.generate(prompt, system_prompt, self.role.name)
                 result.content = response
                 result.success = not response.startswith("[生成失败:")
                 if not result.success:
                     result.error = response
+                    print(f"[Agent] {self.role.name} 执行失败: {response[:100]}")
+                else:
+                    print(f"[Agent] {self.role.name} 执行完成 ({len(response)} 字符)")
 
         except Exception as e:
             result.error = f"执行异常: {str(e)}"
+            print(f"[Agent] {self.role.name} 执行异常: {str(e)}")
 
         result.execution_time = time.time() - start_time
         return result

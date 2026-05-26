@@ -118,6 +118,10 @@ class NovelEngine:
             # 获取当前激活的提供商
             provider = self.llm_manager.config.get_active_provider()
             if provider:
+                # 检查 timeout 配置
+                if provider.timeout < 300:
+                    print(f"[警告] LLM超时配置为 {provider.timeout}秒，低于建议值300秒，创作长章节可能会超时。建议在 .env 中将 timeout 设置为 600 或更高。")
+
                 # 创建 LLMClient 并设置正确的 ProviderConfig
                 provider_config = ProviderConfig(
                     api_key=provider.api_key,
@@ -2701,6 +2705,8 @@ class NovelEngine:
 
         # 1.5. 保存章节细纲到文件（审计通过后或最优版本）
         if outline:
+            # 过滤细纲中的LLM输出痕迹
+            outline = self._filter_llm_output(outline)
             outline_path = self.workspace / book.path / "chapters" / f"outline_{chapter_num}.md"
             self.sm.fm.write_text(outline_path, outline)
             print(f"[write_chapter] 细纲已保存: {outline_path}")
@@ -2743,11 +2749,14 @@ class NovelEngine:
 
         # 5. 保存正文
         chapter_path = self.workspace / book.path / "chapters" / f"chapter_{chapter_num}.md"
-        self.sm.fm.write_text(chapter_path, content)
 
         # 5.5 字数检查与调整（扩写/缩写）
         content = self._adjust_chapter_word_count(book, chapter_num, content)
-        # 重新保存调整后的内容
+
+        # 5.6 最终过滤：确保Writer输出的LOG块被清除
+        content = self._filter_llm_output(content)
+
+        # 保存调整后的内容
         self.sm.fm.write_text(chapter_path, content)
 
         # 6. 更新状态
@@ -2879,7 +2888,8 @@ class NovelEngine:
                 if reflector_result.success and reflector_result.content:
                     # 保存反思报告到文件
                     reflection_path = self.workspace / book.path / "chapters" / f"reflection_{chapter_num}.md"
-                    self.sm.fm.write_text(reflection_path, reflector_result.content)
+                    reflection_content = self._filter_llm_output(reflector_result.content)
+                    self.sm.fm.write_text(reflection_path, reflection_content)
                     print(f"[Reflector] 第{chapter_num}章反思报告已保存: {reflection_path}")
             except Exception as e:
                 print(f"[Reflector] 反思失败: {e}")
@@ -2989,9 +2999,14 @@ class NovelEngine:
                     print(f"[_adjust_chapter_word_count] 调整完成: {adjusted_words}字, 新偏差={new_deviation:+d}字 ({new_deviation_percent:.1f}%)")
                     
                     # 如果调整后仍偏差过大，尝试第二次调整（但最多2次）
+                    # 第二次调整时，使用原始正文来判断调整方向
+                    # 因为第一次调整后的内容可能已经偏离了原文的方向
                     if new_deviation_percent > 10 or abs(new_deviation) > 400:
                         print(f"[_adjust_chapter_word_count] 调整后仍需优化，进行第二次调整...")
-                        second_agent = "condenser" if new_deviation > 0 else "expander"
+                        # 使用原始偏差判断方向，而不是调整后的偏差
+                        # 原始偏差 > 0 表示原文仍然超出目标，需要继续缩写
+                        # 原始偏差 < 0 表示原文仍然不足，需要继续扩写
+                        second_agent = "condenser" if deviation > 0 else "expander"
                         second_context = context.copy()
                         # 重试时使用原始正文，而不是缩/扩写结果
                         second_context["chapter_content"] = content
@@ -3349,9 +3364,18 @@ class NovelEngine:
 - words_per_chapter: 单章字数
 - estimated_chapters: 预期章节数
 - estimated_words: 预计完本字数
+- protagonist_name: 主角姓名（如果简报中提到了主角姓名/名字，必须原样提取；不要生成新名字）
+- protagonist_gender: 主角性别
+- protagonist_background: 主角背景
 - core_setting: 核心设定摘要（必须忠实于用户提供的文字，禁止添加用户未提及的内容，禁止改写用户的设定）
 - main_direction: 主线方向（基于用户提供的梗概/大纲提取，不要自行编造）
 - opening_strategy: 开篇策略
+
+⚠️ 主角名提取规则（极其重要！）：
+- 如果简报中提到了主角姓名，必须原样提取到 protagonist_name 字段
+- 例如：简报写"主角余凌"、"主人公叫余凌"、"余凌是一个觉醒者"，则 protagonist_name = "余凌"
+- 如果简报中没有提到主角姓名，才调用 LLM 生成一个合适的名字
+- 禁止在 core_setting 或 main_direction 中添加简报未提及的主角信息
 
 ⚠️ 忠实性约束：
 - 绝对忠实于用户文字：用户写「彗星爆炸导致变异」就不要改成「血脉觉醒」等
@@ -4659,8 +4683,16 @@ class NovelEngine:
         """过滤LLM输出的说明性内容，只保留章节正文"""
         import re
 
-        # 移除 LOG 块（多个短横线包围的内容）
-        content = re.sub(r'━{3,}\s*\n.*?\n.*?━{3,}', '', content, flags=re.DOTALL)
+        # 移除 LOG 块（多个短横线包围的内容，多行）
+        # 匹配 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 开头到 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 结尾的整个块
+        content = re.sub(r'━{3,}\s*\n(?:.*?\n)*?.*?━{3,}', '', content, flags=re.DOTALL)
+
+        # 移除 [LOG] 块（标准格式）
+        # 匹配 [LOG] 开头到下一个 LOG] 或文件末尾的内容
+        content = re.sub(r'\[LOG\][^\[]*?(?=\[LOG\]|$)', '', content, flags=re.DOTALL)
+
+        # 移除 AI 思考过程标签
+        content = re.sub(r'<think>[\s\S]*?', '', content, flags=re.DOTALL)
 
         # 移除 "以下是..." 类引导语（保留冒号后的正文）
         content = re.sub(r'^以下(是|为).*?[:：]\s*', '', content, flags=re.MULTILINE)
@@ -4676,8 +4708,11 @@ class NovelEngine:
         # 匹配到下一个数字列表项或正文段落为止
         content = re.sub(r'^(缩|扩)写原则.*$(?:\n(?![①②③④⑤⑥⑦⑧⑨⑩]|\d+\.).*$)', '', content, flags=re.MULTILINE)
 
-        # 移除 "字数要求"、"输出规范" 等说明段落
+        # 移除 "字数要求"、"输出规范"、"调用规范" 等说明段落
         content = re.sub(r'^(字数要求|输出规范|调用规范).*$(?:\n(?![①②③④⑤⑥⑦⑧⑨⑩]|\d+\.).*$)', '', content, flags=re.MULTILINE)
+
+        # 移除 markdown 代码块（如 ```开头的内容）
+        content = re.sub(r'```[\s\S]*?```', '', content)
 
         # 清理多余的空行
         content = re.sub(r'\n{3,}', '\n\n', content)
