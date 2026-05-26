@@ -4666,11 +4666,11 @@ class NovelEngine:
         content = re.sub(r'^以下(是|为).*?[:：]\s*', '', content, flags=re.MULTILINE)
 
         # 移除行首的任务说明标签
-        content = re.sub(r'^\[LOG\].*$/gm', '')
-        content = re.sub(r'^任务名称:.*$/gm', '')
-        content = re.sub(r'^当前 Agent:.*$/gm', '')
-        content = re.sub(r'^当前阶段:.*$/gm', '')
-        content = re.sub(r'^预计产出:.*$/gm', '')
+        content = re.sub(r'^\[LOG\].*$', '', content, flags=re.MULTILINE)
+        content = re.sub(r'^任务名称:.*$', '', content, flags=re.MULTILINE)
+        content = re.sub(r'^当前 Agent:.*$', '', content, flags=re.MULTILINE)
+        content = re.sub(r'^当前阶段:.*$', '', content, flags=re.MULTILINE)
+        content = re.sub(r'^预计产出:.*$', '', content, flags=re.MULTILINE)
 
         # 移除 "缩写原则"、"扩写原则" 等说明段落
         # 匹配到下一个数字列表项或正文段落为止
