@@ -56,7 +56,7 @@ dimensions:
     weight: 0.3
     description: 调整策略是否具体可执行
 
-output_format: json
+output_format: text
 required_fields:
   - delta_analysis
   - strategy_adjustment

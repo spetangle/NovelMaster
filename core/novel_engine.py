@@ -2885,10 +2885,17 @@ class NovelEngine:
             }
             observer_result = agent_engine.call_agent("observer", observer_context)
 
-            if observer_result.success and observer_result.data:
-                facts = observer_result.data
-                # 更新真相文件
-                self._apply_facts_to_truth_files(book, chapter_num, facts)
+            # observer 可能是 JSON 或 text 格式，处理不同情况
+            if observer_result.success:
+                if observer_result.data:
+                    # JSON 格式结果
+                    facts = observer_result.data
+                    self._apply_facts_to_truth_files(book, chapter_num, facts)
+                elif observer_result.content:
+                    # text 格式结果，记录但不丢失
+                    print(f"[Observer] 第{chapter_num}章事实提取完成 (text format, {len(observer_result.content)} chars)")
+
+            # Step B: 调用 reflector Agent 进行反思与策略调整
 
             # Step B: 调用 reflector Agent 进行反思与策略调整
             try:
@@ -2898,7 +2905,7 @@ class NovelEngine:
                     "chapter_content": content,
                     "chapter_outline": outline,
                     "truth_files": truth_files,
-                    "observer_result": observer_result.data if (observer_result.success and observer_result.data) else {}
+                    "observer_result": observer_result.data if (observer_result.success and observer_result.data) else (observer_result.content if observer_result.success else "")
                 }
                 reflector_result = agent_engine.call_agent("reflector", reflector_context)
 

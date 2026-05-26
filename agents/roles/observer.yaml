@@ -62,7 +62,7 @@ dimensions:
     weight: 0.3
     description: 能否检测潜在矛盾
 
-output_format: json
+output_format: text
 required_fields:
   - state_changes
   - hook_updates
