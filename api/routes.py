@@ -1171,10 +1171,10 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
                     )
                     engine.adjust_chapter_word_count_async(book.id, chapter_num, adjust_task.id)
 
-                    # 等待调整完成（最多60秒）
+                    # 等待调整完成（标准LLM超时600秒）
                     import time
                     wait_start = time.time()
-                    while time.time() - wait_start < 60:
+                    while time.time() - wait_start < 600:
                         adjust_task = task_manager.get_task(adjust_task.id)
                         if adjust_task and adjust_task.status in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.TERMINATED):
                             break
