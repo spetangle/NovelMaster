@@ -1158,6 +1158,31 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
 
                 result = engine.write_chapter(chapter_num)
 
+                # 检查是否需要异步调整字数
+                if result.get('pending_adjust'):
+                    task_manager.update_task(task.id, progress=70,
+                                            message=f"正在调整{chapter_title}字数...", step="调整字数")
+
+                    # 启动后台调整任务
+                    adjust_task = task_manager.create_task(
+                        f"调整第{chapter_num}章字数",
+                        book_id=data.book_id,
+                        task_type="word_adjust"
+                    )
+                    engine.adjust_chapter_word_count_async(book.id, chapter_num, adjust_task.id)
+
+                    # 等待调整完成（最多60秒）
+                    import time
+                    wait_start = time.time()
+                    while time.time() - wait_start < 60:
+                        adjust_task = task_manager.get_task(adjust_task.id)
+                        if adjust_task and adjust_task.status in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.TERMINATED):
+                            break
+                        time.sleep(0.5)
+
+                    task_manager.update_task(task.id, progress=75,
+                                            message=f"{chapter_title}字数调整完成，正在加载内容...", step="加载内容")
+
                 # 创作完成后自动评审
                 chapter_info = engine.get_chapter_content(data.book_id, chapter_num)
                 content = chapter_info.get('chapter', {}).get('content', '') if chapter_info.get('success') else ''

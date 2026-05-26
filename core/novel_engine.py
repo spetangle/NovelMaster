@@ -2750,14 +2750,31 @@ class NovelEngine:
         # 5. 保存正文
         chapter_path = self.workspace / book.path / "chapters" / f"chapter_{chapter_num}.md"
 
-        # 5.5 字数检查与调整（扩写/缩写）
-        content = self._adjust_chapter_word_count(book, chapter_num, content)
+        # 5.5 字数检查与调整（扩写/缩写）- 保存后异步处理
+        # 先保存初稿内容，返回pending_adjust标记
+        initial_content = self._filter_llm_output(content)
+        self.sm.fm.write_text(chapter_path, initial_content)
 
-        # 5.6 最终过滤：确保Writer输出的LOG块被清除
-        content = self._filter_llm_output(content)
+        # 检查是否需要字数调整
+        clean_content = self._clean_content(initial_content)
+        current_words = len(clean_content)
+        target_words = book.words_per_chapter or 3000
+        deviation = current_words - target_words
+        deviation_percent = abs(deviation) / target_words * 100 if target_words > 0 else 0
+        need_adjust = deviation_percent > 15 or abs(deviation) > 500
 
-        # 保存调整后的内容
-        self.sm.fm.write_text(chapter_path, content)
+        # 如果需要调整，返回pending_adjust标记让前端触发异步任务
+        if need_adjust:
+            return {
+                "success": True,
+                "message": f"{chapter_title}初稿已保存，正在异步调整字数...",
+                "chapter_num": chapter_num,
+                "pending_adjust": True,
+                "initial_words": current_words,
+                "target_words": target_words,
+                "deviation": deviation,
+                "content": initial_content
+            }
 
         # 6. 更新状态
         self.sm.update_chapter_status(book, chapter_num, "draft", retry_count=0)
@@ -3032,7 +3049,58 @@ class NovelEngine:
             import traceback
             traceback.print_exc()
             return content
-    
+
+    def adjust_chapter_word_count_async(self, book_id: str, chapter_num: int, task_id: str = None):
+        """异步调整章节字数（后台线程执行）"""
+        import threading
+        from api.task_manager import task_manager, TaskStatus
+
+        def _do_adjust():
+            try:
+                print(f"\n[adjust_chapter_word_count_async] 开始异步调整第{chapter_num}章字数...")
+                book = self.sm.get_book(book_id)
+                if not book:
+                    print(f"[adjust_chapter_word_count_async] 书籍不存在: {book_id}")
+                    if task_id:
+                        task_manager.update_task(task_id, status=TaskStatus.FAILED, message="书籍不存在")
+                    return
+
+                chapter_path = self.workspace / book.path / "chapters" / f"chapter_{chapter_num}.md"
+                if not chapter_path.exists():
+                    print(f"[adjust_chapter_word_count_async] 章节文件不存在: {chapter_path}")
+                    if task_id:
+                        task_manager.update_task(task_id, status=TaskStatus.FAILED, message="章节文件不存在")
+                    return
+
+                content = self.sm.fm.read_text(chapter_path)
+                if not content:
+                    print(f"[adjust_chapter_word_count_async] 章节内容为空")
+                    if task_id:
+                        task_manager.update_task(task_id, status=TaskStatus.FAILED, message="章节内容为空")
+                    return
+
+                # 执行字数调整
+                adjusted_content = self._adjust_chapter_word_count(book, chapter_num, content)
+                if adjusted_content != content:
+                    self.sm.fm.write_text(chapter_path, adjusted_content)
+                    print(f"[adjust_chapter_word_count_async] 第{chapter_num}章字数调整完成")
+                else:
+                    print(f"[adjust_chapter_word_count_async] 第{chapter_num}章字数无需调整")
+
+                if task_id:
+                    task_manager.update_task(task_id, status=TaskStatus.SUCCESS, progress=100,
+                                            message=f"第{chapter_num}章字数调整完成")
+            except Exception as e:
+                print(f"[adjust_chapter_word_count_async] 调整失败: {e}")
+                import traceback
+                traceback.print_exc()
+                if task_id:
+                    task_manager.update_task(task_id, status=TaskStatus.FAILED, message=str(e))
+
+        thread = threading.Thread(target=_do_adjust, daemon=True)
+        thread.start()
+        print(f"[adjust_chapter_word_count_async] 已启动后台线程调整第{chapter_num}章字数")
+
     def _create_minimal_audit(self, chapter_num: int):
         """为前沿章节创建最小审核结果"""
         return type('AuditResult', (), {
