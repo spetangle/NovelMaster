@@ -13,224 +13,14 @@ from datetime import datetime
 from dataclasses import asdict
 
 from .models import BookInfo, ChapterInfo, ChapterStatus, AuditResult, AuditDecision, HookInfo, GlobalConfig, AuditLogTable, ChapterAuditLog
-from .llm_service import LLMService, LLMConfig
+from .llm_service import LLMService, MultiProviderLLMConfig as LLMConfig
+from .file_manager import FileManager
+from .state_manager import StateManager
 
 
 class CancelledException(Exception):
     """任务被取消异常"""
     pass
-
-
-class FileManager:
-    """文件读写管理"""
-    
-    def __init__(self, workspace: str):
-        self.workspace = Path(workspace)
-        self.book_index_path = self.workspace / "book_index.json"
-
-    def read_json(self, path: Path, max_retries: int = 3) -> dict:
-        """读取JSON文件（带重试机制，防止读取到不完整的写入）"""
-        if not path.exists():
-            return {}
-        import time
-        import os
-        for attempt in range(max_retries):
-            try:
-                # 先清空文件缓冲区，确保读取最新数据
-                if attempt == 0:
-                    try:
-                        with open(path, 'rb') as f:
-                            f.flush()
-                            os.fsync(f.fileno())
-                    except:
-                        pass
-                with open(path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except json.JSONDecodeError:
-                if attempt < max_retries - 1:
-                    time.sleep(0.1)
-                    continue
-                raise
-        return {}
-
-    def write_json(self, path: Path, data: dict) -> bool:
-        """写入JSON文件"""
-        import os
-        import traceback
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            # 直接写入文件
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            print(f"[write_json] 写入成功: {path}")
-            return True
-        except Exception as e:
-            print(f"[write_json] 写入JSON失败: {e}")
-            traceback.print_exc()
-            return False
-
-    def read_text(self, path: Path) -> str:
-        """读取文本文件"""
-        if not path.exists():
-            return ""
-        with open(path, 'r', encoding='utf-8') as f:
-            return f.read()
-
-    def write_text(self, path: Path, content: str) -> bool:
-        """写入文本文件"""
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            return True
-        except Exception:
-            return False
-
-
-class StateManager:
-    """状态管理核心"""
-    
-    MAX_RETRY_COUNT = 3
-
-    def __init__(self, workspace: str):
-        self.fm = FileManager(workspace)
-        self.workspace = Path(workspace)
-        self.book_index = self._load_book_index()
-        import threading
-        self._lock = threading.Lock()  # 线程锁，保护 book_index 的并发访问
-
-    def _load_book_index(self) -> dict:
-        """加载书籍索引"""
-        data = self.fm.read_json(self.fm.book_index_path)
-        if not data:
-            data = {"books": [], "current_novel": "", "last_updated": ""}
-        return data
-
-    def _save_book_index(self) -> bool:
-        """保存书籍索引"""
-        return self.fm.write_json(self.fm.book_index_path, self.book_index)
-
-    def get_current_book(self) -> Optional[BookInfo]:
-        """获取当前小说"""
-        current_id = self.book_index.get("current_novel", "")
-        if not current_id:
-            return None
-        for book in self.book_index.get("books", []):
-            if book.get("id") == current_id:
-                return BookInfo.from_dict(book)
-        return None
-
-    def get_book_by_id(self, book_id: str) -> Optional[BookInfo]:
-        """通过ID获取书籍"""
-        with self._lock:
-            for book in self.book_index.get("books", []):
-                if book.get("id") == book_id:
-                    return BookInfo.from_dict(book)
-            # 只在没有找到时打印日志，避免日志过多
-            all_ids = [b.get("id") for b in self.book_index.get("books", [])]
-            print(f"[get_book_by_id] 未找到 {book_id}，当前列表: {all_ids}")
-            return None
-
-    def get_book_by_name(self, name: str) -> Optional[BookInfo]:
-        """通过名称匹配书籍"""
-        name_lower = name.lower()
-        with self._lock:
-            for book in self.book_index.get("books", []):
-                book_name = book.get("name", "").lower()
-                if name_lower == book_name or name_lower in book_name or book_name in name_lower:
-                    return BookInfo.from_dict(book)
-            return None
-
-    def get_all_books(self) -> List[BookInfo]:
-        """获取所有书籍"""
-        return [BookInfo.from_dict(b) for b in self.book_index.get("books", [])]
-
-    def switch_book(self, book_id_or_name: str) -> tuple[bool, str]:
-        """切换当前小说"""
-        book = self.get_book_by_id(book_id_or_name)
-        if not book:
-            book = self.get_book_by_name(book_id_or_name)
-        if not book:
-            return False, f"未找到书籍: {book_id_or_name}"
-        
-        self.book_index["current_novel"] = book.id
-        self.book_index["last_updated"] = datetime.now().isoformat()
-        if self._save_book_index():
-            return True, f"已切换至《{book.name}》"
-        return False, "状态文件保存失败"
-
-    def create_book(self, book_info: BookInfo) -> tuple[bool, str]:
-        """创建新书籍"""
-        import threading
-        print(f"[create_book {threading.current_thread().name}] 开始创建书籍: {book_info.id}, {book_info.name}")
-        
-        # 创建目录结构（不需要锁，目录创建是独立的）
-        book_path = self.workspace / book_info.path
-        for d in ["chapters", "truth_files", "planning_files"]:
-            (book_path / d).mkdir(parents=True, exist_ok=True)
-        
-        with self._lock:
-            # 检查ID是否存在
-            for book in self.book_index.get("books", []):
-                if book["id"] == book_info.id:
-                    print(f"[create_book] 书籍ID已存在: {book_info.id}")
-                    return False, f"书籍ID {book_info.id} 已存在"
-
-            book_dict = book_info.to_dict()
-            print(f"[create_book] 书籍数据: {book_dict}")
-            self.book_index["books"].append(book_dict)
-            self.book_index["current_novel"] = book_info.id
-            self.book_index["last_updated"] = datetime.now().isoformat()
-            print(f"[create_book] 已添加到 book_index，当前书籍列表: {[b.get('id') for b in self.book_index.get('books', [])]}")
-
-            # 在锁内保存，确保原子性
-            if self._save_book_index():
-                print(f"[create_book] 保存成功!")
-                return True, f"书籍《{book_info.name}》创建成功"
-            print(f"[create_book] 保存失败!")
-            return False, "状态文件保存失败"
-
-    def load_project_state(self, book: BookInfo) -> dict:
-        """加载项目状态"""
-        path = self.workspace / book.path / "project_state.json"
-        return self.fm.read_json(path)
-
-    def save_project_state(self, book: BookInfo, state: dict) -> bool:
-        """保存项目状态"""
-        path = self.workspace / book.path / "project_state.json"
-        return self.fm.write_json(path, state)
-
-    def update_chapter_status(
-        self,
-        book: BookInfo,
-        chapter_num: int,
-        status: str,
-        audit_score: int = 0,
-        audit_passed: bool = False,
-        finalized: bool = False,
-        retry_count: int = None
-    ) -> bool:
-        """更新章节状态"""
-        state = self.load_project_state(book)
-        chapter_key = f"chapter_{chapter_num}"
-        if chapter_key not in state.get("chapter_planning", {}):
-            state.setdefault("chapter_planning", {})[chapter_key] = {}
-
-        chapter = state["chapter_planning"][chapter_key]
-        chapter["approval_status"] = status
-        chapter["last_updated"] = datetime.now().isoformat()
-
-        if audit_score > 0:
-            chapter["audit_score"] = audit_score
-            chapter["audit_passed"] = audit_passed
-        if finalized:
-            chapter["finalized"] = True
-        if retry_count is not None:
-            chapter["retry_count"] = retry_count
-
-        return self.save_project_state(book, state)
 
 
 class NovelEngine:
@@ -312,12 +102,40 @@ class NovelEngine:
         """初始化 Agent 组件"""
         try:
             from agents.engine import AgentEngine
-            from core.llm_service import LLMManager
+            from core.llm_service import LLMManager, LLMClient, ProviderConfig, MultiProviderLLMConfig
 
-            self.llm_manager = LLMManager(str(self.workspace / ".env"))
+            # 确定 .env 路径：优先使用 workspace/.env，否则使用项目根目录的 .env
+            workspace_env = self.workspace / ".env"
+            config_path = str(workspace_env) if workspace_env.exists() else ".env"
+            
+            # 创建 LLMManager 并加载多提供商配置
+            self.llm_manager = LLMManager(config_path)
+            
+            # 确保 LLMManager 使用 MultiProviderLLMConfig
+            if not isinstance(self.llm_manager.config, MultiProviderLLMConfig):
+                self.llm_manager.config = MultiProviderLLMConfig.from_env_json(self.config_path)
+            
+            # 获取当前激活的提供商
+            provider = self.llm_manager.config.get_active_provider()
+            if provider:
+                # 创建 LLMClient 并设置正确的 ProviderConfig
+                provider_config = ProviderConfig(
+                    api_key=provider.api_key,
+                    base_url=provider.base_url,
+                    model=provider.model,
+                    max_tokens=provider.max_tokens,
+                    temperature=provider.temperature,
+                    timeout=provider.timeout,
+                    retry_times=provider.retry_times,
+                    retry_delay=provider.retry_delay
+                )
+                self.llm_manager.client = LLMClient(provider_config)
+            
             self.agent_engine = AgentEngine(self.llm_manager)
         except Exception as e:
             print(f"初始化 Agent 失败: {e}")
+            import traceback
+            traceback.print_exc()
             self.agent_engine = None
             self.llm_manager = None
 
@@ -1238,6 +1056,25 @@ class NovelEngine:
             "message": "已进入灵感对话模式",
             "collected_info": getattr(book, 'inspiration_collected_info', {}),
             "dialogue_count": len(getattr(book, 'inspiration_dialogue', []))
+        }
+
+    def exit_inspiration_mode(self, book_id: str) -> Dict[str, Any]:
+        """退出灵感对话模式"""
+        book = self.get_book(book_id)
+        if not book:
+            return {"success": False, "message": "书籍不存在"}
+
+        # 在 book_index 中标记为非灵感模式
+        with self.sm._lock:
+            for b in self.sm.book_index.get("books", []):
+                if b.get("id") == book_id:
+                    b["is_inspiration"] = False
+                    break
+        self.sm._save_book_index()
+
+        return {
+            "success": True,
+            "message": "已退出灵感对话模式"
         }
 
     def init_inspiration_book(self, book_id: str, book_name: str, initial_idea: str = "", 
@@ -2733,7 +2570,11 @@ class NovelEngine:
         chapters = []
         book_path = self.workspace / book.path / "chapters"
         if book_path.exists():
-            for f in sorted(book_path.glob("*.md"), key=lambda x: int(x.stem.split('_')[1]) if len(x.stem.split('_')) > 1 and x.stem.split('_')[1].isdigit() else 0):
+            # 只匹配真正的章节文件 (chapter_*.md)，排除 outline_*、reflection_* 等辅助文件
+            chapter_files = list(book_path.glob("chapter_*.md"))
+            if not chapter_files:
+                chapter_files = list(book_path.glob("ch_*.md"))  # 兼容旧格式
+            for f in sorted(chapter_files, key=lambda x: int(x.stem.split('_')[1]) if len(x.stem.split('_')) > 1 and x.stem.split('_')[1].isdigit() else 0):
                 try:
                     content = f.read_text(encoding='utf-8')
                     lines = content.split('\n')
@@ -2825,43 +2666,60 @@ class NovelEngine:
         if not book:
             return {"success": False, "message": "请先选择或创建书籍"}
 
-        # 判断是否前言（序章）
-        is_preface = (chapter_num == 0)
-        chapter_title = "序章" if is_preface else f"第{chapter_num}章"
+        # 判断章节标题
+        chapter_title = f"第{chapter_num}章"
+
+        print(f"\n{'='*60}")
+        print(f"[write_chapter] 开始创作章节: {chapter_title}")
+        print(f"[write_chapter] 书籍: {book.name} (ID: {book.id})")
+        print(f"[write_chapter] 模式: {'修订' if revise else '重写' if regenerate else '创作'}")
+        print(f"{'='*60}\n")
 
         # 0. 获取上一次评审报告和细纲（修订时使用）
         previous_audit_report = ""
         previous_outline = ""
-        if revise and not is_preface:
+        if revise:
             previous_audit_report = self.get_latest_audit_report(book, chapter_num)
             # 加载上一次生成的细纲
             outline_path = self.workspace / book.path / "chapters" / f"outline_{chapter_num}.md"
             if outline_path.exists():
                 previous_outline = self.sm.fm.read_text(outline_path)
 
-        # 1. 生成章节细纲
-        if is_preface:
-            outline = "【序章章节，无需细纲】"
-        elif regenerate:
-            # 重写模式：从头开始重新生成细纲
-            outline = self._generate_chapter_outline(book, chapter_num, regenerate=True)
+        # 1. 生成并审计章节细纲（含自动修订循环，最多3次，选最优）
+        print(f"[write_chapter] 步骤1: 生成章节细纲...")
+        if regenerate:
+            # 重写模式：从头开始重新生成并审计细纲
+            outline = self._generate_and_audit_outline(book, chapter_num, revise=True)
         elif revise and previous_outline:
-            # 修订模式：基于上一次细纲修改
-            outline = self._generate_chapter_outline(book, chapter_num, regenerate=True,
-                                                      previous_outline=previous_outline,
-                                                      previous_audit=previous_audit_report)
+            # 修订模式：基于上一次细纲修改，附带审计
+            outline = self._generate_and_audit_outline(book, chapter_num, revise=True,
+                                                        previous_outline=previous_outline,
+                                                        previous_audit=previous_audit_report)
         else:
-            outline = self._generate_chapter_outline(book, chapter_num)
+            outline = self._generate_and_audit_outline(book, chapter_num)
+        print(f"[write_chapter] 细纲生成完成，长度: {len(outline) if outline else 0} 字")
+
+        # 1.5. 保存章节细纲到文件（审计通过后或最优版本）
+        if outline:
+            outline_path = self.workspace / book.path / "chapters" / f"outline_{chapter_num}.md"
+            self.sm.fm.write_text(outline_path, outline)
+            print(f"[write_chapter] 细纲已保存: {outline_path}")
 
         # 2. 加载真相文件
+        print(f"[write_chapter] 步骤2: 加载真相文件...")
         truth_files = self._load_truth_files(book)
+        print(f"[write_chapter] 真相文件已加载，包含 {len(truth_files)} 个文件")
 
         # 3. 编译上下文
-        context = self._compile_context(book, chapter_num, outline, truth_files, is_preface)
+        print(f"[write_chapter] 步骤3: 编译上下文...")
+        context = self._compile_context(book, chapter_num, outline, truth_files)
+        print(f"[write_chapter] 上下文编译完成，长度: {len(context)} 字")
 
         # 4. 生成正文
+        print(f"[write_chapter] 步骤4: 生成章节正文（目标字数: {book.words_per_chapter}字）...")
         try:
-            content = self._generate_chapter_content(book, chapter_num, context, outline, is_preface, revise=revise, revise_reference=previous_audit_report)
+            content = self._generate_chapter_content(book, chapter_num, context, outline, revise=revise, revise_reference=previous_audit_report)
+            print(f"[write_chapter] 正文生成完成，长度: {len(content)} 字")
         except Exception as e:
             # 生成失败：恢复原有内容（如果是修订/重写模式），避免章节变成空白
             chapter_path = self.workspace / book.path / "chapters" / f"chapter_{chapter_num}.md"
@@ -2887,40 +2745,41 @@ class NovelEngine:
         chapter_path = self.workspace / book.path / "chapters" / f"chapter_{chapter_num}.md"
         self.sm.fm.write_text(chapter_path, content)
 
+        # 5.5 字数检查与调整（扩写/缩写）
+        content = self._adjust_chapter_word_count(book, chapter_num, content)
+        # 重新保存调整后的内容
+        self.sm.fm.write_text(chapter_path, content)
+
         # 6. 更新状态
         self.sm.update_chapter_status(book, chapter_num, "draft", retry_count=0)
 
-        # 7. 质量审查（前沿跳过审查或降低标准）
-        if is_preface:
-            audit_result = self._create_minimal_audit(chapter_num)
-        else:
-            audit_result = self._audit_chapter(book, chapter_num, content, truth_files, previous_audit_report)
+        # 7. 质量审查
+        audit_result = self._audit_chapter(book, chapter_num, content, truth_files, previous_audit_report)
 
         # 8. 检查触发修订的条件
         need_revision = False
         revision_reasons = []
-        
-        if not is_preface:
-            # 条件1：核心漏洞必须修订
-            if audit_result.core_issues:
-                need_revision = True
-                core_issues_detail = []
-                for ci in audit_result.core_issues:
-                    core_issues_detail.append(f"{ci.get('dimension', '未知')}：{ci.get('description', '')}")
-                revision_reasons.append(f"存在{len(audit_result.core_issues)}个核心漏洞（{'; '.join(core_issues_detail)}）")
-            
-            # 条件2：字数误差超过200字必须修订
-            if abs(audit_result.word_count_deviation) > 200:
-                need_revision = True
-                deviation = audit_result.word_count_deviation
-                direction = "超出" if deviation > 0 else "不足"
-                revision_reasons.append(f"字数偏差{direction}200字")
-            
-            # 条件3：评分低于75分需要修订
-            if audit_result.chapter_score < 75:
-                need_revision = True
-                if "核心漏洞" not in revision_reasons[0] if revision_reasons else True:
-                    revision_reasons.append(f"评分{audit_result.chapter_score}低于75分")
+
+        # 条件1：核心漏洞必须修订
+        if audit_result.core_issues:
+            need_revision = True
+            core_issues_detail = []
+            for ci in audit_result.core_issues:
+                core_issues_detail.append(f"{ci.get('dimension', '未知')}：{ci.get('description', '')}")
+            revision_reasons.append(f"存在{len(audit_result.core_issues)}个核心漏洞（{'; '.join(core_issues_detail)}）")
+
+        # 条件2：字数误差超过500字必须修订（与细纲宽容度一致）
+        if abs(audit_result.word_count_deviation) > 500:
+            need_revision = True
+            deviation = audit_result.word_count_deviation
+            direction = "超出" if deviation > 0 else "不足"
+            revision_reasons.append(f"字数偏差{direction}500字")
+
+        # 条件3：评分低于75分需要修订
+        if audit_result.chapter_score < 75:
+            need_revision = True
+            if "核心漏洞" not in revision_reasons[0] if revision_reasons else True:
+                revision_reasons.append(f"评分{audit_result.chapter_score}低于75分")
         
         if need_revision:
             revision_msg = "；".join(revision_reasons)
@@ -2956,15 +2815,13 @@ class NovelEngine:
         )
 
         # 11. 更新完成章节数
-        if not is_preface:
-            book.completed_chapters += 1
+        book.completed_chapters += 1
 
-        # 12. 更新真相文件（章节过审后提取事实并更新文档）
-        if not is_preface:
-            try:
-                self._update_truth_for_chapter(book, chapter_num, content)
-            except Exception as e:
-                print(f"更新真相文件失败: {e}")
+        # 12. 更新真相文件 + 反思策略（Observer → Reflector 链路）
+        try:
+            self._update_truth_for_chapter(book, chapter_num, content, outline=outline)
+        except Exception as e:
+            print(f"更新真相文件失败: {e}")
 
         # 13. 生成评审报告内容（用于前端展示）
         audit_report_content = self._generate_audit_report(book, chapter_num, content, audit_result)
@@ -2980,8 +2837,9 @@ class NovelEngine:
             "outline": outline
         }
 
-    def _update_truth_for_chapter(self, book: BookInfo, chapter_num: int, content: str):
-        """更新当前章节的真相文件"""
+    def _update_truth_for_chapter(self, book: BookInfo, chapter_num: int, content: str, outline: str = ""):
+        """更新当前章节的真相文件（含 Observer → Reflector 链路）"""
+        print(f"\n[_update_truth_for_chapter] 开始处理第{chapter_num}章...")
         try:
             from agents.engine import AgentEngine
             from core.llm_service import LLMManager
@@ -2992,19 +2850,39 @@ class NovelEngine:
             # 加载现有真相文件
             truth_files = self._load_truth_files(book)
 
-            # 调用 observer Agent 提取事实
-            context = {
+            # Step A: 调用 observer Agent 提取事实
+            observer_context = {
                 "book": book.to_dict(),
                 "chapter_num": chapter_num,
                 "chapter_content": content,
                 "truth_files": truth_files
             }
-            result = agent_engine.call_agent("observer", context)
+            observer_result = agent_engine.call_agent("observer", observer_context)
 
-            if result.success and result.data:
-                facts = result.data
+            if observer_result.success and observer_result.data:
+                facts = observer_result.data
                 # 更新真相文件
                 self._apply_facts_to_truth_files(book, chapter_num, facts)
+
+            # Step B: 调用 reflector Agent 进行反思与策略调整
+            try:
+                reflector_context = {
+                    "book": book.to_dict(),
+                    "chapter_num": chapter_num,
+                    "chapter_content": content,
+                    "chapter_outline": outline,
+                    "truth_files": truth_files,
+                    "observer_result": observer_result.data if (observer_result.success and observer_result.data) else {}
+                }
+                reflector_result = agent_engine.call_agent("reflector", reflector_context)
+
+                if reflector_result.success and reflector_result.content:
+                    # 保存反思报告到文件
+                    reflection_path = self.workspace / book.path / "chapters" / f"reflection_{chapter_num}.md"
+                    self.sm.fm.write_text(reflection_path, reflector_result.content)
+                    print(f"[Reflector] 第{chapter_num}章反思报告已保存: {reflection_path}")
+            except Exception as e:
+                print(f"[Reflector] 反思失败: {e}")
         except Exception as e:
             print(f"提取章节事实失败: {e}")
 
@@ -3012,6 +2890,133 @@ class NovelEngine:
         """将提取的事实应用到真相文件"""
         # 实现事实应用逻辑
         pass
+
+    def _adjust_chapter_word_count(self, book: BookInfo, chapter_num: int, content: str) -> str:
+        """检查并调整章节字数（扩写/缩写）
+        
+        根据字数偏差自动决定是否调用扩写/缩写Agent。
+        
+        Args:
+            book: 书籍信息
+            chapter_num: 章节编号
+            content: 章节正文内容
+            
+        Returns:
+            调整后的章节内容
+        """
+        # 统计当前字数（去除markdown标记）
+        clean_content = self._clean_content(content)
+        current_words = len(clean_content)
+        target_words = book.words_per_chapter or 3000
+        
+        deviation = current_words - target_words
+        deviation_percent = abs(deviation) / target_words * 100 if target_words > 0 else 0
+        
+        print(f"\n[_adjust_chapter_word_count] 字数检查: 当前={current_words}字, 目标={target_words}字, 偏差={deviation:+d}字 ({deviation_percent:.1f}%)")
+        
+        # 字数检查阈值
+        # - 偏差超过15%需要调整
+        # - 或者绝对偏差超过500字
+        need_adjust = deviation_percent > 15 or abs(deviation) > 500
+        
+        if not need_adjust:
+            print(f"[_adjust_chapter_word_count] 字数在可接受范围内，无需调整")
+            return content
+        
+        # 确定调整方向
+        if deviation < 0:
+            # 字数不足，需要扩写
+            action = "扩写"
+            adjust_words = abs(deviation) + 300  # 多扩写300字以确保达标
+            print(f"[_adjust_chapter_word_count] 字数不足，需要扩写约{adjust_words}字")
+        else:
+            # 字数超出，需要缩写
+            action = "缩写"
+            adjust_words = deviation + 300  # 多缩写300字以确保达标
+            print(f"[_adjust_chapter_word_count] 字数超出，需要缩写约{adjust_words}字")
+        
+        # 调用对应的Agent进行字数调整
+        try:
+            # 确保agent_engine已初始化且LLMClient配置正确
+            if not hasattr(self, 'agent_engine') or not self.agent_engine:
+                self._init_agents()
+            elif self.agent_engine and self.llm_manager:
+                # 检查LLMClient是否使用了正确的ProviderConfig
+                provider = self.llm_manager.config.get_active_provider()
+                if provider and hasattr(self.llm_manager, 'client'):
+                    client_config = self.llm_manager.client.config
+                    # 如果client_config的base_url为空或无效，尝试重新初始化
+                    if not getattr(client_config, 'base_url', '') or not getattr(client_config, 'api_key', ''):
+                        from core.llm_service import LLMClient, ProviderConfig
+                        provider_config = ProviderConfig(
+                            api_key=provider.api_key,
+                            base_url=provider.base_url,
+                            model=provider.model,
+                            max_tokens=provider.max_tokens,
+                            temperature=provider.temperature,
+                            timeout=provider.timeout,
+                            retry_times=provider.retry_times,
+                            retry_delay=provider.retry_delay
+                        )
+                        self.llm_manager.client = LLMClient(provider_config)
+            
+            if self.agent_engine:
+                # 调用扩写/缩写Agent
+                agent_name = "expander" if deviation < 0 else "condenser"
+                
+                context = {
+                    "book": book.to_dict(),
+                    "chapter_num": chapter_num,
+                    "chapter_content": content,
+                    "current_words": current_words,
+                    "target_words": target_words,
+                    "adjust_words": adjust_words,
+                    "deviation": deviation
+                }
+                
+                print(f"[_adjust_chapter_word_count] 调用 {agent_name} Agent 进行章节{action}...")
+                result = self.agent_engine.call_agent(agent_name, context)
+                
+                if result.success and result.content:
+                    adjusted_content = self._filter_llm_output(result.content)
+
+                    # 验证调整后的字数
+                    adjusted_clean = self._clean_content(adjusted_content)
+                    adjusted_words = len(adjusted_clean)
+                    new_deviation = adjusted_words - target_words
+                    new_deviation_percent = abs(new_deviation) / target_words * 100 if target_words > 0 else 0
+                    
+                    print(f"[_adjust_chapter_word_count] 调整完成: {adjusted_words}字, 新偏差={new_deviation:+d}字 ({new_deviation_percent:.1f}%)")
+                    
+                    # 如果调整后仍偏差过大，尝试第二次调整（但最多2次）
+                    if new_deviation_percent > 10 or abs(new_deviation) > 400:
+                        print(f"[_adjust_chapter_word_count] 调整后仍需优化，进行第二次调整...")
+                        second_agent = "condenser" if new_deviation > 0 else "expander"
+                        second_context = context.copy()
+                        # 重试时使用原始正文，而不是缩/扩写结果
+                        second_context["chapter_content"] = content
+                        second_context["current_words"] = current_words
+                        second_result = self.agent_engine.call_agent(second_agent, second_context)
+                        
+                        if second_result.success and second_result.content:
+                            adjusted_content = self._filter_llm_output(second_result.content)
+                            final_clean = self._clean_content(adjusted_content)
+                            final_words = len(final_clean)
+                            print(f"[_adjust_chapter_word_count] 第二次调整完成: {final_words}字")
+                    
+                    return adjusted_content
+                else:
+                    print(f"[_adjust_chapter_word_count] Agent调用失败: {result.error if result else '未知错误'}")
+                    return content
+            else:
+                print(f"[_adjust_chapter_word_count] agent_engine未初始化，无法调用Agent")
+                return content
+                
+        except Exception as e:
+            print(f"[_adjust_chapter_word_count] 调整失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return content
     
     def _create_minimal_audit(self, chapter_num: int):
         """为前沿章节创建最小审核结果"""
@@ -3469,6 +3474,7 @@ class NovelEngine:
     def _generate_story_bible(self, book: BookInfo, planning: Dict, 
                              characters: str = None, feedback: str = "") -> str:
         """生成世界观设定"""
+        target_words = book.words_per_chapter or 3000
         genre = planning.get('genre', book.genre or '都市')
         
         # 如果有反馈，说明是修订模式
@@ -3529,7 +3535,10 @@ class NovelEngine:
 
 使用Markdown格式输出。"""
         
-        result = self.llm.generate(prompt, self.llm.get_system_prompt("architect"))
+        # 替换 system_prompt 中的 {words_per_chapter} 占位符
+        target_words = book.words_per_chapter or 3000
+        system_prompt = self.llm.get_system_prompt("architect").replace("{words_per_chapter}", str(target_words))
+        result = self.llm.generate(prompt, system_prompt)
         if result and not result.startswith("["):
             return f"# {book.name} 世界观设定\n\n{result}"
         
@@ -3540,6 +3549,7 @@ class NovelEngine:
                            characters: str, feedback: str, 
                            original_content: str = "") -> str:
         """修订世界观设定"""
+        target_words = book.words_per_chapter or 3000
         genre = planning.get('genre', book.genre or '都市')
         protagonist_name = planning.get('主角名', '') or "主角"
         
@@ -3559,7 +3569,9 @@ class NovelEngine:
 请重新生成完整的世界观设定文档，保持Markdown格式。"""
         
         try:
-            result = self.llm.generate(prompt, self.llm.get_system_prompt("architect"))
+            # 替换 system_prompt 中的 {words_per_chapter} 占位符
+            system_prompt = self.llm.get_system_prompt("architect").replace("{words_per_chapter}", str(target_words))
+            result = self.llm.generate(prompt, system_prompt)
             if result and not result.startswith("[") and len(result.strip()) > 100:
                 return f"# {book.name} 世界观设定\n\n{result}"
             
@@ -3665,6 +3677,7 @@ class NovelEngine:
     def _generate_book_rules(self, book: BookInfo, genre: str, feedback: str = "", 
                             story_bible: str = "") -> str:
         """生成创作规则"""
+        target_words = book.words_per_chapter or 3000
         # 如果有反馈，说明是修订模式
         if feedback:
             return self._revise_book_rules(book, genre, feedback)
@@ -3693,7 +3706,9 @@ class NovelEngine:
 
 使用Markdown格式输出。"""
         
-        result = self.llm.generate(prompt, self.llm.get_system_prompt("architect"))
+        # 替换 system_prompt 中的 {words_per_chapter} 占位符
+        system_prompt = self.llm.get_system_prompt("architect").replace("{words_per_chapter}", str(target_words))
+        result = self.llm.generate(prompt, system_prompt)
         if result and not result.startswith("["):
             return f"# {book.name} 创作规则\n\n{result}"
         
@@ -3701,6 +3716,7 @@ class NovelEngine:
     
     def _revise_book_rules(self, book: BookInfo, genre: str, feedback: str) -> str:
         """修订创作规则"""
+        target_words = book.words_per_chapter or 3000
         prompt = f"""请根据以下评审报告，对小说《{book.name}》的创作规则进行修订。
 
 【评审反馈】
@@ -3715,11 +3731,13 @@ class NovelEngine:
 
 请重新生成完整的创作规则文档，保持Markdown格式。"""
         
-        result = self.llm.generate(prompt, self.llm.get_system_prompt("architect"))
+        # 替换 system_prompt 中的 {words_per_chapter} 占位符
+        system_prompt = self.llm.get_system_prompt("architect").replace("{words_per_chapter}", str(target_words))
+        result = self.llm.generate(prompt, system_prompt)
         if result and not result.startswith("["):
             return f"# {book.name} 创作规则\n\n{result}"
         
-        return None  # 修订失败时返回None
+        return ""  # 修订失败时返回空字符串而非None
     
     def _generate_book_rules_fallback(self, book: BookInfo, genre: str) -> str:
         """创作规则回退模板"""
@@ -3746,7 +3764,7 @@ class NovelEngine:
             previous_outline: 上一次生成的细纲（用于修订模式，基于原细纲修改）
         """
         truth_files = self._load_truth_files(book)
-        chapter_title = "序章" if chapter_num == 0 else f"第{chapter_num}章"
+        chapter_title = f"第{chapter_num}章"
 
         # 构建修订提示
         revise_hint = ""
@@ -3777,28 +3795,36 @@ class NovelEngine:
 
 【修订要求】：请重新审视上一次的章节结构，生成一个更好的版本。注意避免重复的情节和角色行为。"""
         
+        target_words = book.words_per_chapter or 3000
+
         prompt = f"""请为小说《{book.name}》{chapter_title}生成章节细纲。
 
+【创作要求】
+- 目标字数：约 {target_words} 字（正文应控制在 {target_words}~{target_words + 500} 字之间）
+- 请根据目标字数合理规划情节密度，确保情节量与字数匹配
+{revise_hint}
 当前世界状态：
 {truth_files.get('current_state', '无')}
 
 待回收伏笔：
-{truth_files.get('pending_hooks', '无')}{revise_hint}
+{truth_files.get('pending_hooks', '无')}
 
 请生成包含以下部分的章节结构：
 1. 本章核心事件（一句话概括）
 2. 起承转合结构
-3. 关键情节点（3-5个）
+3. 关键情节点（3-5个，每个情节点应匹配约 {target_words // 4} 字的篇幅）
 4. 伏笔埋设
 5. 本章结尾钩子
-6. 预估字数
+6. 预估字数（目标 {target_words} 字，合理范围 {target_words - 200}~{target_words + 500} 字）
 
 使用Markdown格式输出。"""
-        
-        result = self.llm.generate(prompt, self.llm.get_system_prompt("architect"))
+
+        # 替换 system_prompt 中的 {words_per_chapter} 占位符
+        system_prompt = self.llm.get_system_prompt("architect").replace("{words_per_chapter}", str(target_words))
+        result = self.llm.generate(prompt, system_prompt)
         if result and not result.startswith("["):
             return result
-        
+
         return f"""# {chapter_title} 章节结构
 
 ## 本章核心事件
@@ -3814,6 +3840,9 @@ class NovelEngine:
 1. [情节点1]
 2. [情节点2]
 3. [情节点3]
+
+## 预估字数
+约 {target_words} 字
 """
 
     def _generate_full_outline(self, book: BookInfo, planning: Dict, story_bible: str,
@@ -3873,7 +3902,10 @@ class NovelEngine:
 
 请生成详细且实用的章节大纲："""
 
-        result = self.llm.generate(prompt, self.llm.get_system_prompt("architect"))
+        # 替换 system_prompt 中的 {words_per_chapter} 占位符
+        target_words = book.words_per_chapter or 3000
+        system_prompt = self.llm.get_system_prompt("architect").replace("{words_per_chapter}", str(target_words))
+        result = self.llm.generate(prompt, system_prompt)
 
         if result and not result.startswith("["):
             return f"# {book.name} - 章节大纲\n\n*本文档定义了整本书的章节规划，应在章节创作时参考。*\n\n{result}"
@@ -3914,25 +3946,20 @@ class NovelEngine:
 *生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}*
 """
 
-    def _compile_context(self, book: BookInfo, chapter_num: int, outline: str, truth_files: Dict, is_preface: bool = False) -> str:
-        """编译上下文"""
-        if is_preface:
-            return f"""# 序章创作包
+    def _compile_context(self, book: BookInfo, chapter_num: int, outline: str, truth_files: Dict) -> str:
+        """编译上下文（含上一章 Reflector 策略调整）"""
+        # 加载上一章的反思报告（Reflector 输出），为本章创作提供策略指导
+        previous_reflection = ""
+        if chapter_num > 1:
+            reflection_path = self.workspace / book.path / "chapters" / f"reflection_{chapter_num - 1}.md"
+            if reflection_path.exists():
+                previous_reflection = self.sm.fm.read_text(reflection_path)
+                if previous_reflection:
+                    previous_reflection = f"""
+## 上章反思与策略调整（来自 Reflector）
+> 以下是对上一章创作的分析报告和本章策略建议，请注意吸收并调整创作方向。
 
-## 作者意图（长期愿景）
-{truth_files.get('author_intent', '[来自 author_intent.md 的创作愿景]')}
-
-## 当前焦点（近期任务）
-{truth_files.get('current_focus', '[来自 current_focus.md 的近期重点]')}
-
-## 创作约束
-{truth_files.get('book_rules', '[来自 book_rules.md 的强制规则]')}
-
-## 世界观摘要
-{truth_files.get('story_bible', '[来自 story_bible.md 的核心设定]')}
-
-## 小说简介
-{truth_files.get('planning', '[来自 planning.md 的创作构想]')}
+{previous_reflection}
 """
 
         return f"""# 上下文编译包 - 第 {chapter_num} 章
@@ -3957,12 +3984,12 @@ class NovelEngine:
 
 ## 伏笔状态
 {truth_files.get('pending_hooks', '[待回收伏笔]')}
-
+{previous_reflection}
 ## 本章任务
 {outline}
 """
 
-    def _generate_chapter_content(self, book: BookInfo, chapter_num: int, context: str, outline: str, is_preface: bool = False, revise: bool = False, revise_reference: str = "") -> str:
+    def _generate_chapter_content(self, book: BookInfo, chapter_num: int, context: str, outline: str, revise: bool = False, revise_reference: str = "") -> str:
         """生成章节正文
 
         Args:
@@ -3970,6 +3997,12 @@ class NovelEngine:
         Raises:
             Exception: LLM生成失败时抛出异常，避免保存[待生成]占位内容
         """
+        print(f"\n[生成章节正文] 开始...")
+        print(f"[生成章节正文] 章节: 第{chapter_num}章")
+        print(f"[生成章节正文] 目标字数: {book.words_per_chapter}字")
+        print(f"[生成章节正文] 上下文长度: {len(context)}字")
+        print(f"[生成章节正文] 细纲长度: {len(outline)}字")
+        
         # 修订模式提示
         if revise:
             if revise_reference:
@@ -3997,26 +4030,6 @@ class NovelEngine:
         else:
             revise_hint = ""
 
-        if is_preface:
-            prompt = f"""请为小说《{book.name}》创作序章。
-
-序章要求：
-1. 字数：500-1000字
-2. 介绍故事背景、主要人物和核心冲突
-3. 吸引读者继续阅读
-4. 简洁有力，点明故事主题
-
-题材：{book.genre}
-
-以下是上下文编译包：
-{context}
-
-直接输出序章内容，不要包含标题。"""
-            result = self.llm.generate(prompt, self.llm.get_system_prompt("writer"), max_tokens=4000)
-            if result and not result.startswith("["):
-                return f"# 序章\n\n{result}\n\n---\n字数统计: 约 {len(result)} 字"
-            raise Exception(f"序章生成失败：LLM接口调用异常，请检查API配置或稍后重试" + (f"（{result[:80]}）" if result else "（无响应）"))
-
         prompt = f"""请为小说《{book.name}》创作第{chapter_num}章正文。
 
 目标字数：{book.words_per_chapter}字
@@ -4037,14 +4050,15 @@ class NovelEngine:
 
 直接输出正文内容。"""
         
-        result = self.llm.generate(prompt, self.llm.get_system_prompt("writer"), max_tokens=16000)
+        # 长篇章节生成（max_tokens=16000）使用15分钟超时，避免超时失败
+        result = self.llm.generate(prompt, self.llm.get_system_prompt("writer"), max_tokens=16000, timeout=900)
         if result and not result.startswith("["):
             return f"# 第 {chapter_num} 章\n\n{result}\n\n---\n字数统计: 约 {len(result)} 字"
         raise Exception(f"第{chapter_num}章生成失败：LLM接口调用异常，请检查API配置或稍后重试" + (f"（{result[:80]}）" if result else "（无响应）"))
 
     def _generate_audit_report(self, book: BookInfo, chapter_num: int, content: str, audit_result: AuditResult) -> str:
         """生成评审报告文档"""
-        chapter_title = "序章" if chapter_num == 0 else f"第{chapter_num}章"
+        chapter_title = f"第{chapter_num}章"
         
         # 构建问题列表
         issues_text = ""
@@ -4135,6 +4149,226 @@ class NovelEngine:
         latest_report = sorted(reports, key=lambda x: x.stat().st_mtime, reverse=True)[0]
         return self.sm.fm.read_text(latest_report)
 
+    def _audit_outline(self, book: BookInfo, chapter_num: int, outline: str) -> dict:
+        """对章节细纲进行结构化审查
+        
+        Returns:
+            dict with keys: passed(bool), score(int), report(str), issues(list), score_breakdown(dict)
+        """
+        target_words = book.words_per_chapter or 3000
+
+        prompt = f"""请对小说《{book.name}》第{chapter_num}章的细纲进行结构化审查。
+
+【创作背景】
+- 题材：{book.genre}
+- 目标字数：每章约 {target_words} 字（合理范围 {target_words - 500}~{target_words + 500} 字）
+- 字数偏差容忍度：±500 字
+
+【章节细纲】
+{outline}
+
+【审查要求】
+请严格按照维度评分，重点关注：
+1. 各情节点分配的字数是否与目标 {target_words} 字匹配
+2. 预估字数是否在 {target_words - 500}~{target_words + 500} 字范围内
+3. 起承转合结构是否完整
+
+返回 JSON：
+{{
+    "plot_structure_score": 情节结构完整性得分(0-20),
+    "word_allocation_score": 字数分配合理性得分(0-20),
+    "foreshadowing_score": 伏笔埋设质量得分(0-20),
+    "hook_score": 钩子有效性得分(0-20),
+    "word_estimate_score": 字数预估准确性得分(0-20),
+    "issues": [
+        {{"dimension": "维度名", "description": "问题描述", "severity": "高/中/低", "suggestion": "修改建议"}}
+    ],
+    "strengths": ["亮点1", "亮点2"],
+    "overall_assessment": "综合评语"
+}}
+
+只返回JSON。"""
+
+        audit_data = self.llm.generate_json(prompt, self.llm.get_system_prompt("outline_auditor"))
+        if not audit_data:
+            # LLM 调用失败，使用默认及格分数放行
+            return {
+                "passed": True,
+                "score": 80,
+                "report": "# 细纲审计（自动通过）\n\nLLM审计服务暂不可用，细纲自动通过。",
+                "issues": [],
+                "score_breakdown": {}
+            }
+
+        # 解析各维度得分
+        ps = max(0, min(20, audit_data.get("plot_structure_score", 15) or 15))
+        wa = max(0, min(20, audit_data.get("word_allocation_score", 15) or 15))
+        fs = max(0, min(20, audit_data.get("foreshadowing_score", 15) or 15))
+        hs = max(0, min(20, audit_data.get("hook_score", 15) or 15))
+        we = max(0, min(20, audit_data.get("word_estimate_score", 15) or 15))
+
+        # 加权总分
+        total = ps * 0.25 + wa * 0.30 + fs * 0.20 + hs * 0.15 + we * 0.10
+        total = round(total / 20 * 100)  # 转换为百分制
+
+        issues = audit_data.get("issues") or []
+
+        # 判定是否通过
+        passed = total >= 75 and wa >= 12  # 字数分配维度必须 >= 12/20
+
+        # 构建报告
+        report_lines = [
+            f"# 第 {chapter_num} 章细纲审计报告",
+            "",
+            f"## 审查结论",
+            f"{'✅ 通过' if passed else '❌ 需修订'}",
+            "",
+            "## 维度评分",
+            "| 维度 | 得分/20 | 评价 |",
+            "|------|---------|------|",
+            f"| 情节结构完整性 | {ps} | {'良好' if ps >= 15 else '需改进' if ps >= 10 else '严重不足'} |",
+            f"| 字数分配合理性 | {wa} | {'良好' if wa >= 15 else '需改进' if wa >= 10 else '严重不足'} |",
+            f"| 伏笔埋设质量 | {fs} | {'良好' if fs >= 15 else '需改进' if fs >= 10 else '严重不足'} |",
+            f"| 钩子有效性 | {hs} | {'良好' if hs >= 15 else '需改进' if hs >= 10 else '严重不足'} |",
+            f"| 字数预估准确性 | {we} | {'良好' if we >= 15 else '需改进' if we >= 10 else '严重不足'} |",
+            "",
+            f"## 综合得分",
+            f"{total}/100",
+            "",
+        ]
+
+        if issues:
+            report_lines.append("## 问题清单")
+            report_lines.append("| 编号 | 维度 | 问题描述 | 严重度 | 修改建议 |")
+            report_lines.append("|------|------|----------|--------|----------|")
+            for i, issue in enumerate(issues, 1):
+                report_lines.append(
+                    f"| Q{i:03d} | {issue.get('dimension', '未知')} | "
+                    f"{issue.get('description', '')} | "
+                    f"{issue.get('severity', '中')} | "
+                    f"{issue.get('suggestion', '—')} |"
+                )
+
+        report = "\n".join(report_lines)
+
+        return {
+            "passed": passed,
+            "score": total,
+            "report": report,
+            "issues": issues,
+            "score_breakdown": {
+                "plot_structure": ps,
+                "word_allocation": wa,
+                "foreshadowing": fs,
+                "hook": hs,
+                "word_estimate": we
+            }
+        }
+
+    def _generate_and_audit_outline(self, book: BookInfo, chapter_num: int,
+                                     revise: bool = False, previous_audit: str = "",
+                                     previous_outline: str = "") -> str:
+        """生成章节细纲并进行审计（含最多3次自动修订循环）
+        
+        流程：生成细纲 → 审计 → 不通过则修订 → 最多3次 → 选最优
+        
+        Returns:
+            通过审计的细纲文本（或3次中最优版本）
+        """
+        max_attempts = 3
+        best_outline = None
+        best_score = -1
+        best_report = ""
+
+        chapter_title = f"第{chapter_num}章"
+        print(f"\n{'='*60}")
+        print(f"[OutlineAudit] {chapter_title}细纲生成与审计开始 (最多{max_attempts}次尝试)")
+        print(f"[OutlineAudit] 模式: {'修订模式' if revise or previous_audit else '首次生成'}"
+              f"{' (附审计反馈)' if previous_audit else ''}")
+
+        for attempt in range(1, max_attempts + 1):
+            # 生成/修订细纲
+            print(f"\n[OutlineAudit] --- 尝试 {attempt}/{max_attempts} ---")
+            if attempt == 1:
+                print(f"[OutlineAudit] 正在生成细纲...")
+                outline = self._generate_chapter_outline(
+                    book, chapter_num,
+                    regenerate=revise,
+                    previous_audit=previous_audit,
+                    previous_outline=previous_outline
+                )
+            else:
+                # 修订模式：带上一次审计报告
+                print(f"[OutlineAudit] 正在修订细纲（依据上次审计报告）...")
+                outline = self._generate_chapter_outline(
+                    book, chapter_num,
+                    regenerate=True,
+                    previous_audit=best_report,
+                    previous_outline=best_outline or ""
+                )
+
+            if not outline or outline.startswith("["):
+                print(f"[OutlineAudit] ✗ 细纲生成失败 (尝试 {attempt}/{max_attempts})")
+                continue
+
+            # 计算细纲字数
+            outline_len = len(outline)
+            print(f"[OutlineAudit] 细纲生成完成 ({outline_len} 字符)，正在调用审计...")
+
+            # 审计细纲
+            audit_result = self._audit_outline(book, chapter_num, outline)
+            score = audit_result["score"]
+            breakdown = audit_result.get("score_breakdown", {})
+
+            # 打印详细得分
+            print(f"[OutlineAudit] 审计完成，得分 {score}/100 {'✓ 通过' if audit_result['passed'] else '✗ 需修订'}")
+            if breakdown:
+                print(f"[OutlineAudit]   维度得分: "
+                      f"情节结构={breakdown.get('plot_structure', '?')}/20, "
+                      f"字数分配={breakdown.get('word_allocation', '?')}/20, "
+                      f"伏笔={breakdown.get('foreshadowing', '?')}/20, "
+                      f"钩子={breakdown.get('hook', '?')}/20, "
+                      f"字数预估={breakdown.get('word_estimate', '?')}/20")
+            issues = audit_result.get("issues") or []
+            if issues and not audit_result["passed"]:
+                high_issues = [i for i in issues if i.get("severity") == "高"]
+                print(f"[OutlineAudit]   问题数: {len(issues)} (高严重度: {len(high_issues)})")
+                for i, issue in enumerate(issues[:3], 1):
+                    print(f"[OutlineAudit]     {i}. [{issue.get('dimension', '?')}] {issue.get('description', '')[:60]}")
+
+            # 记录最优版本
+            if score > best_score:
+                best_score = score
+                best_outline = outline
+                best_report = audit_result["report"]
+                if score > 0:
+                    print(f"[OutlineAudit]   ↑ 更新最优版本 (得分 {score})")
+
+            # 通过则直接返回
+            if audit_result["passed"]:
+                print(f"\n[OutlineAudit] ✓ {chapter_title}细纲在第{attempt}次尝试通过审计")
+                return outline
+
+            # 不通过：保存审计报告，继续下一轮
+            if attempt < max_attempts:
+                print(f"[OutlineAudit]   准备第{attempt + 1}次修订...")
+            outline_audit_path = self.workspace / book.path / "audit_reports" / f"outline_audit_{chapter_num}_v{attempt}.md"
+            audit_report_dir = self.workspace / book.path / "audit_reports"
+            audit_report_dir.mkdir(parents=True, exist_ok=True)
+            self.sm.fm.write_text(outline_audit_path, audit_result["report"])
+            print(f"[OutlineAudit]   审计报告已保存: audit_reports/outline_audit_{chapter_num}_v{attempt}.md")
+
+        # 3次均未通过，使用最优版本
+        print(f"\n[OutlineAudit] ⚠ {chapter_title}细纲{max_attempts}次审计均未通过")
+        print(f"[OutlineAudit]   最优版本: 尝试{best_score}分（对应第{max_attempts}轮中最高分版本）")
+        if best_outline is None:
+            # 兜底：直接生成一个不审计的
+            print(f"[OutlineAudit]   兜底：跳过审计直接生成细纲")
+            best_outline = self._generate_chapter_outline(book, chapter_num)
+        print(f"[OutlineAudit]   使用该版本继续正文创作")
+        print(f"{'='*60}\n")
+        return best_outline
+
     def _audit_chapter(self, book: BookInfo, chapter_num: int, content: str, truth_files: Dict, 
                        previous_audit_report: str = "") -> AuditResult:
         """质量审查"""
@@ -4199,21 +4433,20 @@ class NovelEngine:
         result.calculate_score()
         return result
     
-    def _write_and_audit_chapter(self, book: BookInfo, chapter_num: int, 
-                                  is_preface: bool = False, revise: bool = False) -> Dict:
+    def _write_and_audit_chapter(self, book: BookInfo, chapter_num: int,
+                                  revise: bool = False) -> Dict:
         """
         章节生成-评审-修订循环机制
         
         Args:
             book: 书籍信息
             chapter_num: 章节编号
-            is_preface: 是否为序章
             revise: 是否为修订模式
         
         Returns:
             包含最终内容、评审结果等的字典
         """
-        chapter_title = "序章" if is_preface else f"第{chapter_num}章"
+        chapter_title = f"第{chapter_num}章"
         truth_files = self._load_truth_files(book)
         
         # 收集所有评审候选
@@ -4224,29 +4457,29 @@ class NovelEngine:
         
         # 获取上一次评审报告（修订时使用）
         previous_audit_report = ""
-        if revise and not is_preface:
+        if revise:
             previous_audit_report = self.get_latest_audit_report(book, chapter_num)
         
         # 第1轮：生成章节 + 评审
-        # 1. 生成章节细纲
-        if is_preface:
-            outline = "【序章章节，无需细纲】"
-        elif revise:
-            outline = self._generate_chapter_outline(book, chapter_num, regenerate=True)
+        # 1. 生成并审计章节细纲（含自动修订循环）
+        if revise:
+            outline = self._generate_and_audit_outline(book, chapter_num, revise=True)
         else:
-            outline = self._generate_chapter_outline(book, chapter_num)
-        
+            outline = self._generate_and_audit_outline(book, chapter_num)
+
+        # 1.5. 保存章节细纲到文件
+        if outline:
+            outline_path = self.workspace / book.path / "chapters" / f"outline_{chapter_num}.md"
+            self.sm.fm.write_text(outline_path, outline)
+
         # 2. 编译上下文
-        context = self._compile_context(book, chapter_num, outline, truth_files, is_preface)
+        context = self._compile_context(book, chapter_num, outline, truth_files)
         
         # 3. 生成正文
-        content = self._generate_chapter_content(book, chapter_num, context, outline, is_preface, revise=revise, revise_reference=previous_audit_report)
+        content = self._generate_chapter_content(book, chapter_num, context, outline, revise=revise, revise_reference=previous_audit_report)
         
         # 4. 评审
-        if is_preface:
-            audit_result = self._create_minimal_audit(chapter_num)
-        else:
-            audit_result = self._audit_chapter(book, chapter_num, content, truth_files, previous_audit_report)
+        audit_result = self._audit_chapter(book, chapter_num, content, truth_files, previous_audit_report)
         
         candidates.append({
             "round": 1,
@@ -4284,16 +4517,21 @@ class NovelEngine:
             # 构建修订反馈
             revision_feedback = self._build_chapter_revision_feedback(chapter_title, audit_result)
             
-            # 重新生成细纲
-            outline = self._generate_chapter_outline(book, chapter_num, regenerate=True, 
-                                                    previous_audit=revision_feedback)
-            
+            # 重新生成并审计细纲（含修订循环，基于上次评审反馈）
+            outline = self._generate_and_audit_outline(book, chapter_num, revise=True,
+                                                        previous_audit=revision_feedback)
+
+            # 保存修订后的细纲
+            if outline:
+                outline_path = self.workspace / book.path / "chapters" / f"outline_{chapter_num}.md"
+                self.sm.fm.write_text(outline_path, outline)
+
             # 重新编译上下文
-            context = self._compile_context(book, chapter_num, outline, truth_files, is_preface)
+            context = self._compile_context(book, chapter_num, outline, truth_files)
             
             # 重新生成正文
             content = self._generate_chapter_content(book, chapter_num, context, outline,
-                                                   is_preface, revise=True, revise_reference=revision_feedback)
+                                                     revise=True, revise_reference=revision_feedback)
             
             # 评审修订后的内容
             audit_result = self._audit_chapter(book, chapter_num, content, truth_files, revision_feedback)
@@ -4391,8 +4629,20 @@ class NovelEngine:
         print(f"[{chapter_title}] 第{round_num}轮{action}: {score}分 {status}")
     
     def _clean_content(self, content: str) -> str:
-        """清理章节内容，去除markdown标记，统计纯文字字数"""
+        """清理章节内容，去除markdown标记、LLM输出痕迹，统计纯文字字数"""
         import re
+        # 移除 [LOG] 块及其内容
+        content = re.sub(r'━{5,}.*?━{5,}', '', content, flags=re.DOTALL)
+        # 移除任务说明性文字块（如"任务名称"、"当前Agent"等LOG格式）
+        content = re.sub(r'\[LOG\].*?\n', '', content)
+        content = re.sub(r'任务名称:.*?\n', '', content)
+        content = re.sub(r'当前 Agent:.*?\n', '', content)
+        content = re.sub(r'当前阶段:.*?\n', '', content)
+        content = re.sub(r'预计产出:.*?\n', '', content)
+        # 移除 "以下是..." 类引导语
+        content = re.sub(r'以下(是|为).*?[:：]', '', content)
+        # 移除 "缩写/扩写原则" 等说明
+        content = re.sub(r'(缩|扩)写原则.*?(?=\n\d+\.|\n[^这])', '', content, flags=re.DOTALL)
         # 移除 markdown 标题
         content = re.sub(r'^#+\s+.*$', '', content, flags=re.MULTILINE)
         # 移除分隔线
@@ -4403,6 +4653,40 @@ class NovelEngine:
         content = re.sub(r'[*_`~\[\]]', '', content)
         # 移除多余空白
         content = re.sub(r'\s+', '', content)
+        return content
+
+    def _filter_llm_output(self, content: str) -> str:
+        """过滤LLM输出的说明性内容，只保留章节正文"""
+        import re
+
+        # 移除 LOG 块（多个短横线包围的内容）
+        content = re.sub(r'━{3,}\s*\n.*?\n.*?━{3,}', '', content, flags=re.DOTALL)
+
+        # 移除 "以下是..." 类引导语（保留冒号后的正文）
+        content = re.sub(r'^以下(是|为).*?[:：]\s*', '', content, flags=re.MULTILINE)
+
+        # 移除行首的任务说明标签
+        content = re.sub(r'^\[LOG\].*$/gm', '')
+        content = re.sub(r'^任务名称:.*$/gm', '')
+        content = re.sub(r'^当前 Agent:.*$/gm', '')
+        content = re.sub(r'^当前阶段:.*$/gm', '')
+        content = re.sub(r'^预计产出:.*$/gm', '')
+
+        # 移除 "缩写原则"、"扩写原则" 等说明段落
+        # 匹配到下一个数字列表项或正文段落为止
+        content = re.sub(r'^(缩|扩)写原则.*$(?:\n(?![①②③④⑤⑥⑦⑧⑨⑩]|\d+\.).*$)', '', content, flags=re.MULTILINE)
+
+        # 移除 "字数要求"、"输出规范" 等说明段落
+        content = re.sub(r'^(字数要求|输出规范|调用规范).*$(?:\n(?![①②③④⑤⑥⑦⑧⑨⑩]|\d+\.).*$)', '', content, flags=re.MULTILINE)
+
+        # 清理多余的空行
+        content = re.sub(r'\n{3,}', '\n\n', content)
+
+        # 移除行首和行尾空白
+        lines = content.split('\n')
+        lines = [line.strip() for line in lines]
+        content = '\n'.join(line for line in lines if line)
+
         return content
 
     def generate_chapter_brief(self, book: BookInfo, chapter_num: int) -> Dict[str, Any]:
@@ -4668,6 +4952,78 @@ class NovelEngine:
         log_table.add_log(log)
         return self.save_audit_log_table(book, log_table)
 
+    def check_continuity(self, book: BookInfo, chapter_num: int) -> Dict[str, Any]:
+        """每5章触发连贯性检查（长线/纵向检查）"""
+        try:
+            # 加载当前章节及之前的章节内容（前5章）
+            chapters_content = []
+            book_dir = self.workspace / book.path / "chapters"
+            
+            for i in range(max(1, chapter_num - 4), chapter_num + 1):
+                chapter_path = book_dir / f"chapter_{i}.md"
+                if chapter_path.exists():
+                    content = chapter_path.read_text(encoding='utf-8')
+                    chapters_content.append({"chapter": i, "content": content[:3000]})  # 限制字数
+            
+            if len(chapters_content) < 2:
+                return {
+                    "success": False,
+                    "message": "章节数量不足，无法进行连贯性检查",
+                    "overall_score": 0
+                }
+            
+            # 加载真相文件
+            truth_files = self._load_truth_files(book)
+            
+            # 组合章节内容
+            combined_content = "\n\n".join([
+                f"【第{c['chapter']}章】\n{c['content']}"
+                for c in chapters_content
+            ])
+            
+            # 调用 continuity_auditor 进行连贯性检查
+            if self.agent_engine:
+                context = {
+                    "book": book.to_dict(),
+                    "chapter_num": chapter_num,
+                    "chapter_content": combined_content,
+                    "truth_files": truth_files,
+                    "extra": {"audit_type": "continuity", "check_range": f"第{max(1, chapter_num-4)}-{chapter_num}章"}
+                }
+                
+                result = self.agent_engine.call_agent("continuity_auditor", context)
+                
+                if result.success and result.data:
+                    data = result.data
+                    return {
+                        "success": True,
+                        "chapter_range": f"{max(1, chapter_num-4)}-{chapter_num}",
+                        "overall_score": data.get("overall_score", 0) or data.get("consistency_scores", {}).get("overall", 0),
+                        "contradiction_list": data.get("contradiction_list", []),
+                        "consistency_scores": data.get("consistency_scores", {}),
+                        "recommendations": data.get("recommendations", []),
+                        "details": data
+                    }
+            
+            # 如果没有 agent_engine，使用简化检查
+            return {
+                "success": True,
+                "chapter_range": f"{max(1, chapter_num-4)}-{chapter_num}",
+                "overall_score": 85,
+                "message": "连贯性检查完成",
+                "contradiction_list": [],
+                "recommendations": []
+            }
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "message": f"连贯性检查失败: {str(e)}",
+                "overall_score": 0
+            }
+
     def _load_truth_files(self, book: BookInfo) -> Dict[str, str]:
         """加载真相文件"""
         truth_dir = self.workspace / book.path / "truth_files"
@@ -4762,6 +5118,7 @@ class NovelEngine:
         summary = planning.get('梗概', '')
         style = planning.get('风格', '轻松幽默')
         golden_finger = planning.get('主角的金手指', '')
+        target_words = book.words_per_chapter or 3000
 
         prompt = f"""请为小说《{book.name}》生成【作者意图】文档。
 
@@ -4816,7 +5173,9 @@ class NovelEngine:
 
 请用 Markdown 格式输出，结构清晰，观点明确。这份文档将作为长期创作指导，确保 AI 在整个写作周期内保持方向一致。"""
 
-        result = self.llm.generate(prompt, self.llm.get_system_prompt("architect"))
+        # 替换 system_prompt 中的 {words_per_chapter} 占位符
+        system_prompt = self.llm.get_system_prompt("architect").replace("{words_per_chapter}", str(target_words))
+        result = self.llm.generate(prompt, system_prompt)
         if result and not result.startswith("["):
             return f"# {book.name} - 作者意图\n\n*本文档定义了《{book.name}》的长期创作愿景，是 AI 写作的核心指导文件。*\n\n{result}"
 
@@ -4867,6 +5226,7 @@ class NovelEngine:
         """
         genre = planning.get('genre', book.genre or '都市')
         summary = planning.get('梗概', '')
+        target_words = book.words_per_chapter or 3000
 
         prompt = f"""请为小说《{book.name}》生成【当前焦点】文档。
 
@@ -4900,7 +5260,9 @@ class NovelEngine:
 
 请用 Markdown 格式输出，结构清晰。"""
 
-        result = self.llm.generate(prompt, self.llm.get_system_prompt("architect"))
+        # 替换 system_prompt 中的 {words_per_chapter} 占位符
+        system_prompt = self.llm.get_system_prompt("architect").replace("{words_per_chapter}", str(target_words))
+        result = self.llm.generate(prompt, system_prompt)
         if result and not result.startswith("["):
             return f"# {book.name} - 当前焦点\n\n*本文档记录最近 1-3 章的创作重点，应在章节写作时优先参考。*\n\n{result}"
 

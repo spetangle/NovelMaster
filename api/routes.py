@@ -193,6 +193,13 @@ async def enter_inspiration(book_id: str):
     return result
 
 
+@router.post("/books/{book_id}/inspiration/exit")
+async def exit_inspiration(book_id: str):
+    """退出灵感对话模式"""
+    result = engine.exit_inspiration_mode(book_id)
+    return result
+
+
 @router.get("/books/{book_id}/inspiration")
 async def get_inspiration_info(book_id: str):
     """获取灵感书籍的详细信息"""
@@ -629,6 +636,10 @@ async def write_chapter(data: WriteChapterRequest):
 
     if not isinstance(chapter_num, int) or chapter_num < 1:
         raise HTTPException(status_code=400, detail="章节号必须为正整数")
+    
+    # 序章功能已移除，章节号必须从1开始
+    if chapter_num == 0:
+        raise HTTPException(status_code=400, detail="序章功能已移除，章节号必须从1开始")
 
     result = engine.write_chapter(chapter_num, revise=data.revise, regenerate=data.regenerate)
     return result
@@ -1109,7 +1120,7 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
     
     def run():
         try:
-            chapter_title = "序章" if chapter_num == 0 else f"第{chapter_num}章"
+            chapter_title = f"第{chapter_num}章"
 
             # 检查是否已取消
             if task_manager.is_cancelled(task.id):
@@ -1361,6 +1372,24 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
                     result['suggest_revise'] = True
                     result['suggest_message'] = "黄金三章审查：建议优化前3章"
 
+            # 每5章触发连贯性检查（长线/纵向检查）
+            if chapter_num % 5 == 0 and data.action in ("continue", "revise", "regenerate"):
+                task_manager.update_task(task.id, progress=97,
+                                        message="正在进行长线连贯性检查...", step="连贯性检查")
+                continuity_result = engine.check_continuity(book, chapter_num)
+                result['continuity_audit'] = continuity_result
+
+                # 记录连贯性检查日志
+                if continuity_result.get('success'):
+                    engine.add_audit_log(
+                        book=book,
+                        chapter_num=chapter_num,
+                        action="continuity_check",
+                        audit_result=None,
+                        chapter_status="draft",
+                        message=f"连贯性检查完成，综合评分: {continuity_result.get('overall_score', 0)}"
+                    )
+
             task_manager.update_task(task.id, progress=100, message=f"{chapter_title}{action_name}完成！",
                                     result=result, status=TaskStatus.SUCCESS)
         except Exception as e:
@@ -1398,12 +1427,16 @@ async def auto_write(data: AutoWriteRequest):
     chapters_dir = engine.workspace / book.path / "chapters"
     existing_chapters = []
     if chapters_dir.exists():
-        existing_chapters = [int(f.stem.replace('ch', '')) for f in chapters_dir.glob("ch*.md") if f.stem.startswith('ch')]
+        # 只匹配真正的章节文件 chapter_*.md，排除 outline_*、reflection_* 等辅助文件
+        existing_chapters = [
+            int(f.stem.split('_')[1]) for f in chapters_dir.glob("chapter_*.md")
+            if len(f.stem.split('_')) > 1 and f.stem.split('_')[1].isdigit()
+        ]
     start_chapter = max(existing_chapters) + 1 if existing_chapters else 1
     end_chapter = start_chapter + data.chapter_count - 1
     
     # 创建任务
-    task = task_manager.create_task(f"自动续写 {data.book_id} 第{start_chapter}-{end_chapter}章")
+    task = task_manager.create_task(f"自动续写 {data.book_id} 第{start_chapter}-{end_chapter}章", book_id=data.book_id)
     
     # 后台运行
     def run():
@@ -1446,6 +1479,13 @@ async def list_tasks():
     return {"success": True, "tasks": tasks}
 
 
+@router.get("/tasks/running")
+async def get_running_tasks():
+    """获取所有运行中的任务"""
+    tasks = task_manager.get_running_tasks()
+    return {"success": True, "tasks": tasks, "count": len(tasks)}
+
+
 @router.get("/tasks/{task_id}")
 async def get_task(task_id: str):
     """获取任务状态"""
@@ -1475,13 +1515,6 @@ async def terminate_all_tasks():
         "message": f"已终止 {terminated_count} 个任务",
         "terminated_count": terminated_count
     }
-
-
-@router.get("/tasks/running")
-async def get_running_tasks():
-    """获取所有运行中的任务"""
-    tasks = task_manager.get_running_tasks()
-    return {"success": True, "tasks": tasks, "count": len(tasks)}
 
 
 # ============== 文档管理 ==============
@@ -1758,7 +1791,7 @@ async def restore_chapter(data: RestoreChapterRequest):
     # 从 trash 删除
     trash_path.unlink()
     
-    chapter_name = "序章" if chapter_num == 0 else f"第{chapter_num}章"
+    chapter_name = f"第{chapter_num}章"
     return {"success": True, "message": f"{chapter_name}已从trash恢复", "chapter_num": chapter_num}
 
 
@@ -1916,7 +1949,7 @@ async def delete_chapter(book_id: str, chapter_num: int):
     # 删除原文件
     chapter_path.unlink()
 
-    chapter_name = "序章" if chapter_num == 0 else f"第{chapter_num}章"
+    chapter_name = f"第{chapter_num}章"
     return {"success": True, "message": f"{chapter_name}已移至回收站"}
 
 

@@ -25,7 +25,7 @@ system_prompt: |
   [{words_per_chapter}字小说正文]
 
   ## 质量要求
-  - 字数: 单章 {words_per_chapter} 字
+  - 字数: 单章约 {words_per_chapter} 字
   - 禁止: 角色 OOC、战力崩坏、信息越界
   - 禁止: 行动描写（仅允许对话与叙事）
   - 必须: 埋设/回收伏笔、推动主线、体现情感弧线
@@ -68,6 +68,7 @@ system_prompt: |
   - 禁止在状态写入完成前提前退出
   - 禁止跳过 project_state.json 直接修改其他文件
   - 禁止在写入时遗漏 last_updated 时间戳
+  - 禁止字数严重超出或不足，若违反将被视为不合格输出，需要你重新生成。
 
 dimensions:
   - name: 内容质量

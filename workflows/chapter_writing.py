@@ -22,6 +22,7 @@ class ChapterWritingWorkflow:
         {"role": "auditor", "on_failure": "abort", "retry": 3},
         {"role": "hook_manager", "on_failure": "skip"},
         {"role": "observer", "on_failure": "skip"},
+        {"role": "reflector", "on_failure": "skip"},
     ]
 
     def __init__(self, state_manager: StateManager, agent_engine: AgentEngine):
@@ -76,6 +77,14 @@ class ChapterWritingWorkflow:
                 "chapter_num": chapter_num,
                 "truth_files": truth_files
             }
+
+            # 加载上一章的反思报告（Reflector 输出），为本章提供策略指导
+            if chapter_num > 1:
+                reflection_path = self.sm.workspace / book.path / "chapters" / f"reflection_{chapter_num - 1}.md"
+                if reflection_path.exists():
+                    previous_reflection = self.sm.fm.read_text(reflection_path)
+                    if previous_reflection:
+                        context["previous_reflection"] = previous_reflection
 
             # Step 2: 生成章节细纲
             report(f"生成{chapter_title}细纲", 15, "正在生成章节细纲...")
@@ -146,10 +155,24 @@ class ChapterWritingWorkflow:
             })
 
             # Step 8: 更新真相文件
-            self.engine.call_agent("observer", {
+            observer_result = self.engine.call_agent("observer", {
                 **context,
                 "chapter_content": chapter_content
             })
+
+            # Step 9: 反思与策略调整（Observer → Reflector 链路）
+            try:
+                reflector_result = self.engine.call_agent("reflector", {
+                    **context,
+                    "chapter_content": chapter_content,
+                    "chapter_outline": outline,
+                    "observer_result": observer_result.data if (observer_result.success and observer_result.data) else {}
+                })
+                if reflector_result.success and reflector_result.content:
+                    reflection_path = self.sm.workspace / book.path / "chapters" / f"reflection_{chapter_num}.md"
+                    self.sm.fm.write_text(reflection_path, reflector_result.content)
+            except Exception as e:
+                print(f"[Reflector] 反思失败: {e}")
 
             report(f"完成{chapter_title}", 100, f"{chapter_title}创作完成，得分 {score}")
 

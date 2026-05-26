@@ -177,7 +177,7 @@ async function loadBookManagerList() {
                 <td class="word-count">${formatNumber(totalWords)} 字</td>
                 <td class="latest-chapter" title="${escapeHtml(latestChapter)}">${escapeHtml(latestChapter)}</td>
                 <td class="book-manager-actions-cell">
-                    <button class="btn btn-sm btn-primary" onclick="selectBookFromManager('${book.id}')">打开</button>
+                    <button class="btn btn-sm btn-primary" onclick="selectBookFromManager('${book.id}', event)">打开</button>
                     <button class="btn btn-sm btn-secondary" onclick="renameBookFromManager('${book.id}', '${escapeHtml(book.name)}')">改名</button>
                     <button class="btn btn-sm btn-danger" onclick="deleteBookFromManager('${book.id}', '${escapeHtml(book.name)}')">删除</button>
                 </td>
@@ -189,10 +189,28 @@ async function loadBookManagerList() {
 }
 
 // 从书籍管理页选择书籍
-async function selectBookFromManager(bookId) {
-    await selectBook(bookId, true);
-    showWritingPage();
-    addSystemMessage(`已选择书籍《${currentBook.name}》，可以开始创作了。`);
+async function selectBookFromManager(bookId, evt) {
+    // 按钮 loading 反馈
+    const btn = evt && evt.target ? evt.target : document.querySelector(`button[onclick*="selectBookFromManager('${bookId}')"]`);
+    const originalText = btn ? btn.textContent : '打开';
+    try {
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '⏳ 加载中...';
+        }
+        await selectBook(bookId, true);
+        showWritingPage();
+        addSystemMessage(`已选择书籍《${currentBook.name}》，可以开始创作了。`);
+        resumeRunningTasks();
+    } catch (e) {
+        console.error('[selectBookFromManager] 异常:', e);
+        addSystemMessage(`❌ 打开书籍失败: ${e.message}`);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
+    }
 }
 
 // 从书籍管理页删除书籍
@@ -268,6 +286,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             autoSaveChatLog();
         }
     });
+
+    // 尝试恢复进行中的任务
+    resumeRunningTasks();
 
     // 定时自动保存（每30秒）
     setInterval(() => {
@@ -1944,9 +1965,9 @@ async function executeWrite(action) {
         if (action === 'continue') {
             // 续写：找到最后一章，下一章自动+1
             if (chapters.length === 0) {
-                // 新书，默认创作序章（第0章）
-                target = { id: null, number: 0, name: '序章' };
-                addSystemMessage('📝 未选择章节，默认创作序章（第0章）');
+                // 新书，默认创作第1章
+                target = { id: null, number: 1, name: '第1章' };
+                addSystemMessage('📝 未选择章节，默认创作第1章');
             } else {
                 // 已有章节，找到最大编号，续写下一章
                 const maxChapter = Math.max(...chapters.map(ch => ch.number));
@@ -2061,19 +2082,18 @@ async function loadChapterList() {
             // 章节名
             const chapterTitle = ch.title ? `<span class="chapter-title">${escapeHtml(ch.title)}</span>` : '';
             
-            // 状态显示逻辑 - 优化评审结果显示
-            let statusBadge = '';
+            // 状态显示逻辑 - 只显示最终评分，无评分则显示0分
+            let scoreBadge = '';
             if (ch.finalized) {
                 // 已终审通过
-                statusBadge = '<span class="status-badge finalized" title="已终审通过">✅ 通过</span>';
+                scoreBadge = `<span class="status-badge finalized" title="已终审通过">✅ ${ch.audit_score || 0}分</span>`;
             } else if (ch.audit_score > 0) {
                 // 有评审分 - 根据分数显示不同颜色
                 const scoreColor = ch.audit_score >= 75 ? 'color: #52c41a;' : (ch.audit_score >= 60 ? 'color: #faad14;' : 'color: #f5222d;');
-                const scoreLabel = ch.status === 'draft' ? '初评' : '修订';
-                statusBadge = `<span class="status-badge" style="${scoreColor} font-weight: bold;" title="${scoreLabel}评分：${ch.audit_score}分">📊 ${ch.audit_score}分</span>`;
+                scoreBadge = `<span class="status-badge" style="${scoreColor} font-weight: bold;" title="评分：${ch.audit_score}分">📊 ${ch.audit_score}分</span>`;
             } else {
-                // 无评审分
-                statusBadge = '<span class="status-badge draft">📝 待评审</span>';
+                // 无评审分，显示0分
+                scoreBadge = '<span class="status-badge draft" title="待评审">📊 0分</span>';
             }
 
             // 字数 - 更清晰显示
@@ -2097,9 +2117,8 @@ async function loadChapterList() {
                         ${lockIcon}
                     </div>
                     <div class="chapter-row-info">
-                        ${statusBadge}
+                        ${scoreBadge}
                         <span class="chapter-words" style="${wordCountColor}">📝 ${wordCountDisplay}字</span>
-                        <button class="chapter-select-btn" onclick="selectChapterForWrite('${ch.id}', '${ch.number}', '${encodeURIComponent(chapterFullTitle)}', event)" title="选为当前章节">📌选</button>
                     </div>
                 </div>
             `;
@@ -2145,6 +2164,12 @@ async function selectChapter(chapterId) {
         await loadChapterList();
         viewChapterContent();
         updateChapterHintUI();  // 更新章节提示
+
+        // 更新自动续写的起始章节输入框为当前选中章节
+        const autoStartChapter = document.getElementById('auto-start-chapter');
+        if (autoStartChapter && currentChapter) {
+            autoStartChapter.value = currentChapter.number;
+        }
     }
 }
 
@@ -2787,6 +2812,26 @@ function stopTaskPolling() {
     currentTaskId = null;
 }
 
+// 页面加载后自动恢复运行中的任务
+async function resumeRunningTasks() {
+    try {
+        const res = await api('/api/tasks/running');
+        if (!res.success || !res.tasks || res.tasks.length === 0) return;
+
+        // 只恢复当前选中书的任务
+        const bookTasks = currentBook
+            ? res.tasks.filter(t => t.book_id === currentBook.id)
+            : res.tasks;
+
+        for (const task of bookTasks) {
+            addSystemMessage(`🔄 检测到运行中的任务"${task.name}"，正在恢复进度...`);
+            startTaskPolling(task.id);
+        }
+    } catch (e) {
+        // 静默失败，不影响正常使用
+    }
+}
+
 let taskProgressElement = null;
 let taskStartTime = null;
 let taskTimerInterval = null;
@@ -3156,9 +3201,26 @@ async function exitInspirationMode() {
     const chatToolbarBottom = document.querySelector('.chat-toolbar-bottom');
     if (chatToolbarBottom) chatToolbarBottom.style.display = 'block';
 
+    // 恢复工具栏标签页
+    const toolbarTabs = document.querySelector('.toolbar-tabs');
+    if (toolbarTabs) toolbarTabs.style.display = 'block';
+
     // 重置状态
     isInspirationMode = false;
     currentInspirationBookId = null;
+
+    // 通知后端退出灵感模式
+    if (currentBook) {
+        try {
+            await api(`/api/books/${currentBook.id}/inspiration/exit`, {
+                method: 'POST'
+            });
+            // 更新本地书籍的灵感模式状态
+            currentBook.is_inspiration = false;
+        } catch (e) {
+            console.log('通知后端退出灵感模式失败:', e);
+        }
+    }
 
     // 移除灵感模式类名
     const writingPage = document.getElementById('writing-page');
@@ -3876,9 +3938,12 @@ async function pollInspirationGenerateStatus(taskId) {
             // 更新书籍信息区域（显示灵感入口）
             await updateBookInfoSection();
             
-            // 刷新章节列表以显示新生成的文档
+            // 刷新章节列表和设定文档状态
             await loadChapterList();
             await updateDocStatus();
+            // 刷新书籍列表，确保新创建的书籍出现在列表中
+            await loadBookList();
+            await loadBookManagerList();
 
         } else if (task.status === 'failed') {
             stopInspirationGeneratePolling();
@@ -3939,28 +4004,50 @@ async function startAutoWrite() {
         return;
     }
 
-    const chapterCount = parseInt(document.getElementById('auto-chapter-count').value) || 5;
-    const autoReview = document.getElementById('auto-review').checked;
-    const autoRevise = document.getElementById('auto-revise').checked;
-    const reviewScore = parseInt(document.getElementById('auto-review-score').value) || 75;
+    const btn = document.querySelector('.auto-write-row .btn-primary');
+    const originalText = btn ? btn.textContent : '🚀 开始';
 
-    addSystemMessage(`🚀 开始自动续写任务（连续${chapterCount}章）`);
+    try {
+        // 按钮进入 loading 状态
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '⏳ 请求中...';
+        }
 
-    const res = await api('/api/write/auto', {
-        method: 'POST',
-        body: JSON.stringify({
-            book_id: currentBook.id,
-            chapter_count: chapterCount,
-            auto_review: autoReview,
-            auto_revise: autoRevise,
-            review_score: reviewScore
-        })
-    });
+        const chapterCount = parseInt(document.getElementById('auto-chapter-count').value) || 5;
+        const startChapter = parseInt(document.getElementById('auto-start-chapter').value) || 1;
+        const autoReview = document.getElementById('auto-review').checked;
+        const autoRevise = document.getElementById('auto-revise').checked;
 
-    if (res.success && res.task_id) {
-        startTaskPolling(res.task_id);
-    } else {
-        addSystemMessage(`❌ 启动失败: ${res.message}`);
+        addSystemMessage(`🚀 开始自动续写任务（第${startChapter}章起，连续${chapterCount}章）`);
+
+        const res = await api('/api/write/auto', {
+            method: 'POST',
+            body: JSON.stringify({
+                book_id: currentBook.id,
+                start_chapter: startChapter,
+                chapter_count: chapterCount,
+                auto_review: autoReview,
+                auto_revise: autoRevise
+            })
+        });
+
+        if (res.success && res.task_id) {
+            startTaskPolling(res.task_id);
+        } else {
+            const errMsg = res.message || res.detail || JSON.stringify(res);
+            addSystemMessage(`❌ 启动失败: ${errMsg}`);
+            console.error('[startAutoWrite] 启动失败:', res);
+        }
+    } catch (e) {
+        console.error('[startAutoWrite] 异常:', e);
+        addSystemMessage(`❌ 启动异常: ${e.message}`);
+    } finally {
+        // 恢复按钮状态
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
     }
 }
 

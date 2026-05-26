@@ -54,7 +54,7 @@ class LLMConfig:
                     elif key == "LLM_TEMPERATURE":
                         config.temperature = float(value) if value else 0.7
                     elif key == "LLM_TIMEOUT":
-                        config.timeout = int(value) if value else 120
+                        config.timeout = int(value) if value else 600
                     elif key == "LLM_RETRY_TIMES":
                         config.retry_times = int(value) if value else 3
                     elif key == "LLM_RETRY_DELAY":
@@ -173,11 +173,11 @@ class LLMManager:
         self.client = LLMClient(self.config)
         self._token_usage = {"prompt_tokens": 0, "completion_tokens": 0}
 
-    def _load_config(self) -> LLMConfig:
-        """加载配置"""
+    def _load_config(self):
+        """加载配置（支持多提供商JSON格式）"""
         if Path(self.config_path).exists():
-            return LLMConfig.from_env(self.config_path)
-        return LLMConfig()
+            return MultiProviderLLMConfig.from_env_json(self.config_path)
+        return MultiProviderLLMConfig()
 
     def save_config(self) -> bool:
         """保存配置"""
@@ -297,7 +297,7 @@ class ProviderConfig:
             model=data.get("model", ""),
             max_tokens=data.get("max_tokens", 8192),
             temperature=data.get("temperature", 0.7),
-            timeout=data.get("timeout", 300),
+            timeout=data.get("timeout", 600),
             retry_times=data.get("retry_times", 3),
             retry_delay=data.get("retry_delay", 2.0),
             enabled=data.get("enabled", True),
@@ -306,7 +306,7 @@ class ProviderConfig:
         )
 
 
-class LLMConfig:
+class MultiProviderLLMConfig:
     """大模型配置（支持多提供商）"""
     
     # 内置提供商模板
@@ -455,7 +455,7 @@ class LLMConfig:
     @property
     def timeout(self) -> int:
         p = self.get_active_provider()
-        return p.timeout if p else 300
+        return p.timeout if p else 600
     
     @property
     def retry_times(self) -> int:
@@ -513,7 +513,7 @@ class LLMConfig:
                     elif key == "LLM_TEMPERATURE" and config.providers:
                         config.providers[0].temperature = float(value) if value else 0.7
                     elif key == "LLM_TIMEOUT" and config.providers:
-                        config.providers[0].timeout = int(value) if value else 300
+                        config.providers[0].timeout = int(value) if value else 600
                     elif key == "LLM_RETRY_TIMES" and config.providers:
                         config.providers[0].retry_times = int(value) if value else 3
                     elif key == "LLM_RETRY_DELAY" and config.providers:
@@ -704,6 +704,20 @@ class LLMService:
 - <60分：不通过
 
 请返回JSON格式的审查结果。""",
+
+        "outline_auditor": """你是一位专业的章节细纲审计师，负责在正文创作前审查细纲质量。
+你的审查重点在于结构合理性和可行性。
+
+审查维度（各维度满分20分）：
+1. 情节结构完整性 (权重25%)：起承转合是否齐全、逻辑通顺
+2. 字数分配合理性 (权重30%)：各情节点字数分配是否匹配目标字数
+3. 伏笔埋设质量 (权重20%)：伏笔是否合理、可回收
+4. 钩子有效性 (权重15%)：结尾钩子是否制造悬念
+5. 字数预估准确性 (权重10%)：预估字数是否在目标范围±500字内
+
+通过标准：总分≥75 且 字数分配维度≥12分。
+
+请返回JSON格式评分结果。""",
     }
 
     def call(
@@ -714,7 +728,15 @@ class LLMService:
         agent_name: str = "Unknown",
         **kwargs
     ) -> Tuple[bool, str]:
-        """调用大模型"""
+        """调用大模型
+        
+        Args:
+            prompt: 用户输入
+            system_prompt: 系统提示词
+            json_mode: 是否JSON模式
+            agent_name: Agent名称（用于日志）
+            **kwargs: 支持 timeout（超时秒数）、max_tokens、temperature、model
+        """
         import urllib.request
         import urllib.error
 
@@ -724,6 +746,8 @@ class LLMService:
             "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
             "temperature": kwargs.get("temperature", self.config.temperature),
         }
+        # 自定义超时（章节生成等耗时任务可传入更长超时）
+        call_timeout = kwargs.get("timeout", self.config.timeout)
 
         if system_prompt:
             params["messages"].append({"role": "system", "content": system_prompt})
@@ -746,7 +770,7 @@ class LLMService:
                     method="POST"
                 )
 
-                with urllib.request.urlopen(req, timeout=self.config.timeout) as response:
+                with urllib.request.urlopen(req, timeout=call_timeout) as response:
                     result = json.loads(response.read().decode('utf-8'))
 
                     if "choices" in result and len(result["choices"]) > 0:
@@ -908,13 +932,28 @@ class LLMService:
         prompt: str,
         system_prompt: str = "",
         agent_name: str = "System",
-        max_tokens: int = None
+        max_tokens: int = None,
+        timeout: int = None
     ) -> str:
-        """生成内容"""
+        """生成内容
+        
+        Args:
+            prompt: 用户输入
+            system_prompt: 系统提示词
+            agent_name: Agent名称（用于日志）
+            max_tokens: 最大输出token数
+            timeout: 超时秒数（None则使用全局配置）
+        """
         if not self.config.api_key:
             return "[LLM未配置API密钥]"
         
-        success, result = self.call(prompt, system_prompt, agent_name=agent_name, max_tokens=max_tokens)
+        kwargs = dict(agent_name=agent_name)
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        
+        success, result = self.call(prompt, system_prompt, **kwargs)
         if success:
             return result
         return f"[生成失败: {result}]"

@@ -55,7 +55,7 @@ class BookInfo:
     is_inspiration: bool = False  # 是否为灵感对话模式
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "id": self.id,
             "name": self.name,
             "path": self.path,
@@ -66,12 +66,15 @@ class BookInfo:
             "completed_chapters": self.completed_chapters,
             "status": self.status,
             "created_at": self.created_at,
-            "is_inspiration": self.is_inspiration
+            "is_inspiration": self.is_inspiration,
+            "inspiration_collected_info": getattr(self, 'inspiration_collected_info', {}),
+            "inspiration_dialogue": getattr(self, 'inspiration_dialogue', [])
         }
+        return result
 
     @classmethod
     def from_dict(cls, data: dict) -> 'BookInfo':
-        return cls(
+        book = cls(
             id=data.get("id", ""),
             name=data.get("name", ""),
             path=data.get("path", ""),
@@ -84,6 +87,9 @@ class BookInfo:
             created_at=data.get("created_at", ""),
             is_inspiration=data.get("is_inspiration", False)
         )
+        book.inspiration_collected_info = data.get("inspiration_collected_info", {})
+        book.inspiration_dialogue = data.get("inspiration_dialogue", [])
+        return book
 
 
 @dataclass
@@ -244,8 +250,8 @@ class AuditResult:
         # 核心漏洞必须修订（无论分数多高）
         has_core_issues = len(self.core_issues) > 0
         
-        # 字数误差超限必须修订（误差不超过200字）
-        word_count_ok = abs(self.word_count_deviation) <= 200 if self.word_count_deviation != 0 else True
+        # 字数误差超限必须修订（误差不超过500字，与细纲宽容度一致）
+        word_count_ok = abs(self.word_count_deviation) <= 500 if self.word_count_deviation != 0 else True
 
         if self.chapter_score >= 75 and not has_core_issues and word_count_ok:
             self.decision = "通过"
