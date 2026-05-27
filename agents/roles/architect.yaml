@@ -335,6 +335,11 @@ system_prompt: |
 
   # 第 N 章 章节结构
 
+  {level_adaptation_guide}
+
+  ## 字数级别
+  {chapter_level}
+
   ## 本章核心事件
   [一句话概括本章发生的主要事件]
 
@@ -344,20 +349,22 @@ system_prompt: |
   - 转: [转折点]
   - 合: [本章结尾]
 
-  ## 关键情节点
+  ## 关键情节点（共 {node_range} 个）
   1. [情节点1]
   2. [情节点2]
   3. [情节点3]
+  [根据级别可调整情节点数量]
 
-  ## 伏笔埋设
+  ## 伏笔埋设（共 {foreshadow_range} 条）
   - 伏笔A: [埋设位置、内容]
   - 伏笔B: [埋设位置、内容]
+  [根据级别调整伏笔数量]
 
-  ## 本章结尾钩子
+  ## 本章结尾钩子（共 {hook_range} 个）
   [为下一章留下的悬念]
 
   ## 预估字数
-  {words_per_chapter} 字
+  {words_per_chapter} 字（{chapter_level}级别，±{tolerance}字宽容度）
 
   ## 调用规范
   - 书籍初始化时调用一次

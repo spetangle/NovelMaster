@@ -2794,12 +2794,15 @@ class NovelEngine:
                 core_issues_detail.append(f"{ci.get('dimension', '未知')}：{ci.get('description', '')}")
             revision_reasons.append(f"存在{len(audit_result.core_issues)}个核心漏洞（{'; '.join(core_issues_detail)}）")
 
-        # 条件2：字数误差超过500字必须修订（与细纲宽容度一致）
-        if abs(audit_result.word_count_deviation) > 500:
+        # 条件2：字数误差超过宽容度必须修订（根据章节级别动态调整）
+        from core.word_count_template import get_config_by_word_count
+        config = get_config_by_word_count(audit_result.word_count)
+        tolerance = config.word_tolerance if config else 300
+        if abs(audit_result.word_count_deviation) > tolerance:
             need_revision = True
             deviation = audit_result.word_count_deviation
             direction = "超出" if deviation > 0 else "不足"
-            revision_reasons.append(f"字数偏差{direction}500字")
+            revision_reasons.append(f"字数偏差{direction}{tolerance}字")
 
         # 条件3：评分低于75分需要修订
         if audit_result.chapter_score < 75:
@@ -5135,10 +5138,10 @@ class NovelEngine:
             }
 
     def _load_truth_files(self, book: BookInfo) -> Dict[str, str]:
-        """加载真相文件"""
+        """加载真相文件（使用缓存优化静态文件）"""
         truth_dir = self.workspace / book.path / "truth_files"
         book_dir = self.workspace / book.path
-        
+
         def safe_read(path):
             """安全读取文件，不存在时返回空字符串"""
             try:
@@ -5147,23 +5150,117 @@ class NovelEngine:
                 return ""
             except Exception:
                 return ""
-        
-        files = {
-            "planning": safe_read(book_dir / "planning.md"),
-            "story_bible": safe_read(book_dir / "story_bible.md"),
-            "book_rules": safe_read(book_dir / "book_rules.md"),
-            "chapter_outline": safe_read(book_dir / "chapter_outline.md"),
-            "author_intent": safe_read(book_dir / "author_intent.md"),
-            "current_focus": safe_read(book_dir / "current_focus.md"),
-            "current_state": safe_read(truth_dir / "current_state.md"),
-            "particle_ledger": safe_read(truth_dir / "particle_ledger.md"),
-            "emotional_arcs": safe_read(truth_dir / "emotional_arcs.md"),
-            "pending_hooks": safe_read(truth_dir / "pending_hooks.md"),
-            "subplot_board": safe_read(truth_dir / "subplot_board.md"),
-            "character_matrix": safe_read(truth_dir / "character_matrix.md"),
-            "chapter_summaries": safe_read(truth_dir / "chapter_summaries.md")
+
+        # 静态文件：使用缓存摘要（整个生命周期有效）
+        static_files = {
+            'book_rules': (book_dir / "book_rules.md", 3000),
+            'story_bible': (book_dir / "story_bible.md", 4000),
+            'author_intent': (book_dir / "author_intent.md", 2000),
         }
+
+        files = {}
+        for key, (file_path, max_len) in static_files.items():
+            content = safe_read(file_path)
+            if content:
+                files[key] = self._get_cached_summary(book.id, key, content, max_len)
+            else:
+                files[key] = ""
+
+        # 半静态文件：直接读取
+        files["current_focus"] = safe_read(book_dir / "current_focus.md")
+
+        # 动态文件：每章重新加载（不缓存）
+        dynamic_files = {
+            "current_state": truth_dir / "current_state.md",
+            "particle_ledger": truth_dir / "particle_ledger.md",
+            "emotional_arcs": truth_dir / "emotional_arcs.md",
+            "pending_hooks": truth_dir / "pending_hooks.md",
+            "subplot_board": truth_dir / "subplot_board.md",
+            "character_matrix": truth_dir / "character_matrix.md",
+            "chapter_summaries": truth_dir / "chapter_summaries.md"
+        }
+
+        for key, file_path in dynamic_files.items():
+            files[key] = safe_read(file_path)
+
+        # 也加载book级别的文件
+        files["planning"] = safe_read(book_dir / "planning.md")
+        files["chapter_outline"] = safe_read(book_dir / "chapter_outline.md")
+
         return files
+
+    def _get_cached_summary(self, book_id: str, file_key: str, content: str, max_len: int) -> str:
+        """获取缓存的摘要，或生成新摘要并缓存"""
+        import hashlib
+        import json
+
+        cache_dir = self.workspace / book_id / "truth_files" / ".cache"
+        cache_dir.mkdir(exist_ok=True)
+
+        cache_file = cache_dir / f"{file_key}_summary.md"
+        cache_meta = cache_dir / f"{file_key}_meta.json"
+
+        # 检查缓存是否有效（内容hash未变）
+        content_hash = hashlib.md5(content.encode()).hexdigest()
+        if cache_file.exists() and cache_meta.exists():
+            try:
+                meta = json.loads(cache_meta.read_text())
+                if meta.get('hash') == content_hash:
+                    print(f"[_get_cached_summary] Cache hit: {file_key}")
+                    return cache_file.read_text()
+            except Exception:
+                pass
+
+        print(f"[_get_cached_summary] Cache miss: {file_key}, generating summary...")
+        # 生成新摘要
+        summary = self._extract_summary(content, max_len)
+
+        # 写入缓存
+        cache_file.write_text(summary)
+        cache_meta.write_text(json.dumps({'hash': content_hash}))
+
+        return summary
+
+    def _extract_summary(self, content: str, max_len: int) -> str:
+        """规则-based摘要提取（无需LLM）"""
+        lines = content.split('\n')
+        key_lines = []
+
+        for line in lines:
+            # 保留标题行
+            if line.startswith('#') or line.startswith('##'):
+                key_lines.append(line)
+            # 保留关键约束行（禁止、必须、规范等）
+            elif any(kw in line for kw in ['禁止', '必须', '规范', '规则', '必须守']):
+                key_lines.append(line)
+            # 保留列表项和表格行
+            elif line.strip().startswith('-') or line.strip().startswith('|'):
+                key_lines.append(line)
+            # 保留有内容的描述行
+            elif len(line.strip()) > 15:
+                key_lines.append(line)
+
+        result = '\n'.join(key_lines)
+        if len(result) > max_len:
+            result = result[:max_len] + f"\n\n[... 已截断，原文 {len(content)} 字 ...]"
+        return result
+
+    def invalidate_summary_cache(self, book_id: str, file_key: str = None):
+        """清除摘要缓存"""
+        cache_dir = self.workspace / book_id / "truth_files" / ".cache"
+        if not cache_dir.exists():
+            return
+
+        if file_key:
+            # 清除指定文件缓存
+            (cache_dir / f"{file_key}_summary.md").unlink(exist_ok=True)
+            (cache_dir / f"{file_key}_meta.json").unlink(exist_ok=True)
+        else:
+            # 清除所有缓存
+            for f in cache_dir.glob("*_summary.md"):
+                f.unlink()
+            for f in cache_dir.glob("*_meta.json"):
+                f.unlink()
 
     def _init_project_state(self, book: BookInfo):
         """初始化项目状态"""

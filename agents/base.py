@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from .loader import AgentRole, AgentLoader
+from core.word_count_template import get_chapter_level, get_level_adaptation_guide, format_level_prompt
 
 
 @dataclass
@@ -130,6 +131,16 @@ class UniversalAgent:
         else:
             words_per_chapter = 3000
 
+        # 根据字数确定章节级别
+        chapter_level = get_chapter_level(words_per_chapter)
+        level_guide = get_level_adaptation_guide(chapter_level)
+        level_config = format_level_prompt(chapter_level)
+
+        # 获取字数宽容度
+        from core.word_count_template import get_config_by_word_count
+        config = get_config_by_word_count(words_per_chapter)
+        tolerance = config.word_tolerance if config else 300
+
         # 替换占位符
         replacements = {
             "{words_per_chapter}": str(words_per_chapter),
@@ -137,6 +148,10 @@ class UniversalAgent:
             "{book_name}": book.get("name", ""),
             "{genre}": book.get("genre", ""),
             "{platform}": book.get("platform", ""),
+            "{chapter_level}": chapter_level.value,
+            "{level_adaptation_guide}": level_guide,
+            "{level_config}": level_config,
+            "{tolerance}": str(tolerance),
         }
 
         for placeholder, value in replacements.items():
