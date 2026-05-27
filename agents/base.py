@@ -101,8 +101,7 @@ class UniversalAgent:
                     result.success = True
                     print(f"[Agent] {self.role.name} 执行完成 (JSON)")
                 else:
-                    result.error = "JSON 解析失败"
-                    print(f"[Agent] {self.role.name} JSON解析失败")
+                result.error = "JSON 解析失败"
             else:
                 response = self.llm.generate(prompt, system_prompt, self.role.name)
                 result.content = response
@@ -114,10 +113,19 @@ class UniversalAgent:
                     print(f"[Agent] {self.role.name} 执行完成 ({len(response)} 字符)")
 
         except Exception as e:
-            result.error = f"执行异常: {str(e)}"
-            print(f"[Agent] {self.role.name} 执行异常: {str(e)}")
+            print(f"[Agent] {self.role.name} 执行异常: {str(e)} [{execution_time:.1f}s]")
 
-        result.execution_time = time.time() - start_time
+        execution_time = time.time() - start_time
+        result.execution_time = execution_time
+
+        if result.success:
+            if result.data:
+                print(f"[Agent] {self.role.name} 执行完成 (JSON) [{execution_time:.1f}s]")
+            else:
+                print(f"[Agent] {self.role.name} 执行完成 ({len(result.content)} 字符) [{execution_time:.1f}s]")
+        else:
+            print(f"[Agent] {self.role.name} 执行失败: {result.error[:100] if result.error else 'unknown'} [{execution_time:.1f}s]")
+
         return result
 
     def _inject_book_config(self, context: dict) -> str:

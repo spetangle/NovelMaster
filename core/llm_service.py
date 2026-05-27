@@ -758,6 +758,7 @@ class LLMService:
 
         payload = json.dumps(params).encode('utf-8')
 
+        start_time = time.time()
         print(f"[LLM] [{agent_name}] 开始请求 (超时: {call_timeout}s)...")
 
         for attempt in range(self.config.retry_times):
@@ -782,12 +783,13 @@ class LLMService:
                         # 记录成功日志（使用原始内容用于调试）
                         self._write_log(f"LLM调用成功 [{agent_name}]", {
                             "Agent": agent_name,
+                            "Role": agent_name,  # Agent role name (writer, architect, etc.)
                             "Model": params["model"],
                             "System Prompt": system_prompt[:500] if system_prompt else "(无)",
                             "User Prompt": prompt[:2000],
                             "Response (raw)": raw_content[:3000]
                         })
-                        print(f"[LLM] [{agent_name}] 生成完成 ({len(content)} 字符)")
+                        print(f"[LLM] [{agent_name}] 生成完成 ({len(content)} 字符) [{time.time() - start_time:.1f}s]")
                         return True, content
 
                 # 记录失败日志
@@ -810,7 +812,7 @@ class LLMService:
                     "Error": f"网络错误: {str(e)}",
                     "Attempt": attempt + 1
                 })
-                print(f"[LLM] [{agent_name}] 网络错误: {str(e)}")
+                print(f"[LLM] [{agent_name}] 网络错误: {str(e)} [{time.time() - start_time:.1f}s]")
                 return False, f"网络错误: {str(e)}"
             except Exception as e:
                 # 记录异常日志
@@ -819,15 +821,16 @@ class LLMService:
                     "Model": params["model"],
                     "Error": f"调用失败: {str(e)}"
                 })
-                print(f"[LLM] [{agent_name}] 调用异常: {str(e)}")
+                print(f"[LLM] [{agent_name}] 调用异常: {str(e)} [{time.time() - start_time:.1f}s]")
                 return False, f"调用失败: {str(e)}"
 
         self._write_log(f"LLM重试耗尽 [{agent_name}]", {
             "Agent": agent_name,
             "Model": params["model"],
-            "Retries": self.config.retry_times
+            "Retries": self.config.retry_times,
+            "Elapsed": f"{time.time() - start_time:.1f}s"
         })
-        print(f"[LLM] [{agent_name}] 重试次数耗尽")
+        print(f"[LLM] [{agent_name}] 重试次数耗尽 [{time.time() - start_time:.1f}s]")
         return False, "重试次数耗尽"
 
     def call_stream(
@@ -864,6 +867,7 @@ class LLMService:
 
         payload = json.dumps(params).encode('utf-8')
 
+        start_time = time.time()
         full_content = []
 
         print(f"[LLM] [{agent_name}] 开始流式请求...")
@@ -915,7 +919,7 @@ class LLMService:
                     "Response Length (raw)": len(raw_content),
                     "Response Length (cleaned)": len(content)
                 })
-                print(f"[LLM] [{agent_name}] 流式完成 ({len(content)} 字符)")
+                print(f"[LLM] [{agent_name}] 流式完成 ({len(content)} 字符) [{time.time() - start_time:.1f}s]")
                 return True, content
 
             except urllib.error.URLError as e:
@@ -927,7 +931,7 @@ class LLMService:
                     "Model": params["model"],
                     "Error": f"网络错误: {str(e)}"
                 })
-                print(f"[LLM] [{agent_name}] 流式网络错误: {str(e)}")
+                print(f"[LLM] [{agent_name}] 流式网络错误: {str(e)} [{time.time() - start_time:.1f}s]")
                 return False, f"网络错误: {str(e)}"
             except Exception as e:
                 self._write_log(f"LLM流式调用异常 [{agent_name}]", {
@@ -935,7 +939,7 @@ class LLMService:
                     "Model": params["model"],
                     "Error": f"调用失败: {str(e)}"
                 })
-                print(f"[LLM] [{agent_name}] 流式异常: {str(e)}")
+                print(f"[LLM] [{agent_name}] 流式异常: {str(e)} [{time.time() - start_time:.1f}s]")
                 return False, f"调用失败: {str(e)}"
 
         print(f"[LLM] [{agent_name}] 流式重试耗尽")
