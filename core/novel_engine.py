@@ -5201,6 +5201,7 @@ class NovelEngine:
 
         # 半静态文件：直接读取
         files["current_focus"] = safe_read(book_dir / "current_focus.md")
+        files["characters"] = safe_read(book_dir / "characters.md")
 
         # 动态文件：每章重新加载（不缓存）
         dynamic_files = {

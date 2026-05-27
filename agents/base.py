@@ -101,7 +101,7 @@ class UniversalAgent:
                     result.success = True
                     print(f"[Agent] {self.role.name} 执行完成 (JSON)")
                 else:
-                result.error = "JSON 解析失败"
+                    result.error = "JSON 解析失败"
             else:
                 response = self.llm.generate(prompt, system_prompt, self.role.name)
                 result.content = response

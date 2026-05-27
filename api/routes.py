@@ -936,7 +936,8 @@ async def get_book_detail(book_id: str):
         'book_rules_exists': (book_path / "book_rules.md").exists(),
         'chapter_outline_exists': (book_path / "chapter_outline.md").exists(),
         'author_intent_exists': (book_path / "author_intent.md").exists(),
-        'current_focus_exists': (book_path / "current_focus.md").exists()
+        'current_focus_exists': (book_path / "current_focus.md").exists(),
+        'characters_exists': (book_path / "characters.md").exists()
     }
 
     # 读取主角信息

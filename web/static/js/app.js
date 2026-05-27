@@ -1412,7 +1412,7 @@ async function updateDocStatus() {
     const book = res.book;
     
     // 更新新卡片样式
-    const docKeys = ['planning', 'story_bible', 'book_rules', 'chapter_outline'];
+    const docKeys = ['planning', 'story_bible', 'book_rules', 'chapter_outline', 'characters'];
     docKeys.forEach(key => {
         const statusEl = document.getElementById(`status-${key}`);
         if (statusEl) {
@@ -4534,6 +4534,7 @@ const docFileConfig = {
     'story_bible': { name: '世界观设定', category: 'main', icon: '🌍' },
     'book_rules': { name: '书籍规则', category: 'main', icon: '📜' },
     'chapter_outline': { name: '章节大纲', category: 'main', icon: '📑' },
+    'characters': { name: '人物设定', category: 'main', icon: '👤' },
     'current_state': { name: '当前状态', category: 'truth', icon: '📍' },
     'particle_ledger': { name: '资源账本', category: 'truth', icon: '💰' },
     'emotional_arcs': { name: '情感弧线', category: 'truth', icon: '💗' },
@@ -4576,6 +4577,7 @@ async function loadDocFilesList() {
             const isEmpty = wordCount < 10;
             const statusClass = isEmpty ? 'status-empty' : 'status-exists';
             const statusText = isEmpty ? '空' : `${Math.round(wordCount / 1000)}k字`;
+            const regenBtn = key === 'characters' ? '' : `<div class="doc-file-actions"><button class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); regenerateDocFile('${key}')">重新生成</button></div>`;
             html += `
                 <div class="doc-file-card ${statusClass}" onclick="viewDocFile('${key}')">
                     <div class="doc-file-icon">${cfg.icon}</div>
@@ -4585,9 +4587,7 @@ async function loadDocFilesList() {
                             <span class="doc-status-badge ${statusClass}">${statusText}</span>
                         </div>
                     </div>
-                    <div class="doc-file-actions">
-                        <button class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); regenerateDocFile('${key}')">重新生成</button>
-                    </div>
+                    ${regenBtn}
                 </div>
             `;
         });
@@ -4839,6 +4839,7 @@ async function loadDocManagerData() {
             const isEmpty = wordCount < 10;
             const statusClass = isEmpty ? 'status-empty' : 'status-exists';
             const statusText = isEmpty ? '空' : `${Math.round(wordCount / 1000)}k字`;
+            const regenBtn = key === 'characters' ? '' : `<button class="btn btn-xs btn-primary" onclick="regenerateDocFile('${key}');">重新生成</button>`;
             mainHtml += `
                 <div class="doc-manager-card ${statusClass}">
                     <div class="doc-manager-card-header">
@@ -4850,7 +4851,7 @@ async function loadDocManagerData() {
                     </div>
                     <div class="doc-manager-card-actions">
                         <button class="btn btn-xs btn-secondary" onclick="viewDocFile('${key}'); closeDocManager();">查看</button>
-                        <button class="btn btn-xs btn-primary" onclick="regenerateDocFile('${key}');">重新生成</button>
+                        ${regenBtn}
                     </div>
                 </div>
             `;
