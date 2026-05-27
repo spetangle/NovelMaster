@@ -136,7 +136,7 @@ async def create_book(data: CreateBookRequest):
         def run():
             try:
                 task_manager.update_task(task.id, status=TaskStatus.RUNNING, progress=0, message="开始创建...")
-                
+
                 def progress_callback(step, progress, message):
                     task_manager.update_task(
                         task.id,
@@ -144,11 +144,19 @@ async def create_book(data: CreateBookRequest):
                         progress=progress,
                         message=message
                     )
-                
+
+                def cancel_check():
+                    """检查任务是否被终止"""
+                    if task_manager.is_all_terminated():
+                        return True
+                    if task_manager.is_cancelled(task.id):
+                        return True
+                    return False
+
                 result = engine.create_book_workflow_with_progress(
-                    data.brief, book_id, progress_callback
+                    data.brief, book_id, progress_callback, cancel_check
                 )
-                
+
                 if result.get('success'):
                     task_manager.update_task(task.id, status=TaskStatus.SUCCESS,
                         progress=100, message="创建完成", result=result)
@@ -159,7 +167,7 @@ async def create_book(data: CreateBookRequest):
                 import traceback
                 traceback.print_exc()
                 task_manager.update_task(task.id, status=TaskStatus.FAILED, message=f"错误: {str(e)}")
-        
+
         import threading
         threading.Thread(target=run, daemon=True).start()
         
