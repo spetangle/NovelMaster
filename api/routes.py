@@ -68,10 +68,10 @@ async def create_book(data: CreateBookRequest):
     
     # 提取书名
     temp_name = ""
-    name_match = re.search(r'书名[：:]\s*([^\n]+)', data.brief)
+    name_match = re.search(r'\*?书名\*?[：:]\s*([^\n]+)', data.brief)
     if name_match:
-        temp_name = name_match.group(1).strip()
-    
+        temp_name = name_match.group(1).strip().replace('**', '')
+
     book_name = temp_name if temp_name else "新书"
     book_id = engine._generate_book_id()
     
@@ -1198,6 +1198,7 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
                     return
 
                 # 检查是否需要生成细纲
+                task_manager.update_step_status(task.id, 0, StepStatus.RUNNING)
                 task_manager.update_task(task.id, progress=15,
                                         message=f"正在生成{chapter_title}细纲...", step="生成细纲")
 

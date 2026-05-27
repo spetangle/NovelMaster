@@ -185,7 +185,8 @@ class TaskManager:
             task.error = error
         if step is not None:
             task.step = step
-            task.steps.append({"name": step, "time": time.time()})
+            # 注意：不要在这里 append 到 task.steps，这会破坏 TaskStep 数据结构
+            # 步骤状态通过 update_step_status 更新
         
         if status in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED):
             task.completed_at = time.time()

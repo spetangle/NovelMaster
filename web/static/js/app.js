@@ -2904,9 +2904,9 @@ function updateTaskProgress(task) {
             <div class="progress-bar">
                 <div class="progress-fill" style="width: 0%"></div>
             </div>
+            <div class="task-checklist"></div>
             <div class="task-step"></div>
             <div class="task-message"></div>
-            <div class="task-completed-list"></div>
         `;
         messages.appendChild(taskProgressElement);
     }
@@ -2916,35 +2916,40 @@ function updateTaskProgress(task) {
     const percent = taskProgressElement.querySelector('.task-percent');
     const stepEl = taskProgressElement.querySelector('.task-step');
     const msgEl = taskProgressElement.querySelector('.task-message');
-    const completedList = taskProgressElement.querySelector('.task-completed-list');
+    const checklistEl = taskProgressElement.querySelector('.task-checklist');
 
     if (fill) fill.style.width = task.progress + '%';
     if (percent) percent.textContent = task.progress + '%';
 
-    // 处理当前步骤和已完成步骤
-    const currentStep = task.step || '';
-    const currentMsg = task.message || '';
+    // 显示步骤 checklist
+    if (checklistEl && task.steps && task.steps.length > 0) {
+        const currentStepIndex = task.current_step_index || 0;
+        let checklistHtml = '<div class="checklist-container" style="display:flex;flex-wrap:wrap;gap:8px;margin:8px 0;">';
+        task.steps.forEach((step, idx) => {
+            const iconMap = {
+                'pending': '⏳',
+                'running': '🔄',
+                'success': '✅',
+                'skipped': '⏭️',
+                'failed': '❌'
+            };
+            const icon = iconMap[step.status] || '⚪';
+            const isCurrent = idx === currentStepIndex && step.status === 'running';
+            const style = isCurrent ? 'font-weight:bold;color:#007bff;' : 'color:#999;';
+            checklistHtml += `<span class="checklist-item" style="${style}">${icon} ${step.name}</span>`;
+        });
+        checklistHtml += '</div>';
+        checklistEl.innerHTML = checklistHtml;
+    }
 
-    // 如果有新的步骤完成（进度增加且有新的step），记录到已完成列表
-    if (currentStep && task.progress > 0) {
-        // 检查是否已完成该步骤
-        const lastCompleted = completedSteps[completedSteps.length - 1];
-        if (!completedSteps.includes(currentStep) && currentStep !== task.step) {
-            // 添加到已完成列表
-        }
-
-        // 显示当前正在进行
+    // 显示当前正在进行
+    if (currentStep) {
         if (stepEl) {
             stepEl.innerHTML = `<span class="step-running"><img src="/static/images/loading.gif" alt="loading" class="loading-inline"> 正在进行: ${currentStep}</span>`;
         }
         if (msgEl) {
             msgEl.textContent = currentMsg;
         }
-    }
-
-    // 如果有已完成步骤的记录，更新显示
-    if (completedList && completedSteps.length > 0) {
-        completedList.innerHTML = completedSteps.map(s => `<div class="step-done">✓ ${s}</div>`).join('');
     }
 
     // 滚动到底部

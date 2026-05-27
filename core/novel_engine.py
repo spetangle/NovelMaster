@@ -166,9 +166,9 @@ class NovelEngine:
             
             # 3. 书名：用户提供了书名则使用，否则使用书籍ID
             temp_name = ""
-            name_match = re.search(r'书名[：:]\s*([^\n]+)', brief)
+            name_match = re.search(r'\*?书名\*?[：:]\s*([^\n]+)', brief)
             if name_match:
-                temp_name = name_match.group(1).strip()
+                temp_name = name_match.group(1).strip().replace('**', '')
             book_name = temp_name if temp_name else book_id
             
             # 4. 创建BookInfo
@@ -278,9 +278,9 @@ class NovelEngine:
             
             # 提取书名
             temp_name = ""
-            name_match = re.search(r'书名[：:]\s*([^\n]+)', brief)
+            name_match = re.search(r'\*?书名\*?[：:]\s*([^\n]+)', brief)
             if name_match:
-                temp_name = name_match.group(1).strip()
+                temp_name = name_match.group(1).strip().replace('**', '')
             book_name = temp_name if temp_name else book_id
 
             # 2. 创建书籍记录和文件夹
@@ -2526,9 +2526,11 @@ class NovelEngine:
         if self.sm._save_book_index():
             # 同时保存 BookInfo
             self.save_book_meta(book)
+            # 清除缓存，确保下次加载时使用更新后的书名
+            self.invalidate_summary_cache(book)
             return {
-                "success": True, 
-                "message": f"已改名为《{new_name}》", 
+                "success": True,
+                "message": f"已改名为《{new_name}》",
                 "new_name": new_name,
                 "old_name": old_name,
                 "updated_docs": updated_docs
@@ -3091,28 +3093,10 @@ class NovelEngine:
                     new_deviation_percent = abs(new_deviation) / target_words * 100 if target_words > 0 else 0
                     
                     print(f"[_adjust_chapter_word_count] 调整完成: {adjusted_words}字, 新偏差={new_deviation:+d}字 ({new_deviation_percent:.1f}%)")
-                    
-                    # 如果调整后仍偏差过大，尝试第二次调整（但最多2次）
-                    # 第二次调整时，使用原始正文来判断调整方向
-                    # 因为第一次调整后的内容可能已经偏离了原文的方向
-                    if new_deviation_percent > 10 or abs(new_deviation) > 400:
-                        print(f"[_adjust_chapter_word_count] 调整后仍需优化，进行第二次调整...")
-                        # 使用原始偏差判断方向，而不是调整后的偏差
-                        # 原始偏差 > 0 表示原文仍然超出目标，需要继续缩写
-                        # 原始偏差 < 0 表示原文仍然不足，需要继续扩写
-                        second_agent = "condenser" if deviation > 0 else "expander"
-                        second_context = context.copy()
-                        # 重试时使用原始正文，而不是缩/扩写结果
-                        second_context["chapter_content"] = content
-                        second_context["current_words"] = current_words
-                        second_result = self.agent_engine.call_agent(second_agent, second_context)
-                        
-                        if second_result.success and second_result.content:
-                            adjusted_content = self._filter_llm_output(second_result.content)
-                            final_clean = self._clean_content(adjusted_content)
-                            final_words = len(final_clean)
-                            print(f"[_adjust_chapter_word_count] 第二次调整完成: {final_words}字")
-                    
+
+                    # 注意：不再进行第二次调整，避免LLM调用耗时过长导致卡死
+                    # 如果一次调整后仍偏差过大，由后续评审环节处理
+
                     return adjusted_content
                 else:
                     print(f"[_adjust_chapter_word_count] Agent调用失败: {result.error if result else '未知错误'}")
@@ -3552,9 +3536,9 @@ class NovelEngine:
                 planning["genre"] = genre
                 break
         
-        name_match = re.search(r'书名[：:]\s*([^\n]+)', brief)
+        name_match = re.search(r'\*?书名\*?[：:]\s*([^\n]+)', brief)
         if name_match:
-            planning["book_name"] = name_match.group(1).strip()
+            planning["book_name"] = name_match.group(1).strip().replace('**', '')
 
         return planning
     
@@ -3621,9 +3605,7 @@ class NovelEngine:
 ## 黄金三章规划
 {planning.get('golden_chapters_plan', '待规划')}
 
-## 行动建议
-1. 确认规划书内容
-2. 开始创作第1章
+ 
 """
         return doc
 
@@ -4332,7 +4314,12 @@ class NovelEngine:
 
 只返回JSON。"""
 
-        audit_data = self.llm.generate_json(prompt, self.llm.get_system_prompt("outline_auditor"))
+        try:
+            audit_data = self.llm.generate_json(prompt, self.llm.get_system_prompt("outline_auditor"))
+        except Exception as e:
+            print(f"[_audit_outline] 网络错误: {e}")
+            audit_data = None
+
         if not audit_data:
             # LLM 调用失败，使用默认及格分数放行
             return {
