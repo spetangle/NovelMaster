@@ -16,6 +16,7 @@ from .models import BookInfo, ChapterInfo, ChapterStatus, AuditResult, AuditDeci
 from .llm_service import LLMService, MultiProviderLLMConfig as LLMConfig
 from .file_manager import FileManager
 from .state_manager import StateManager
+from .word_count_template import get_chapter_level, get_level_config, get_level_adaptation_guide, format_level_prompt, CHAPTER_LEVEL_CONFIGS
 
 
 class CancelledException(Exception):
@@ -198,6 +199,8 @@ class NovelEngine:
             book_path = self.workspace / book.path
             self.sm.fm.write_text(book_path / "story_bible.md", story_bible)
             self.sm.fm.write_text(book_path / "book_rules.md", book_rules)
+            # 清除摘要缓存，新创建的文件需要重新生成摘要
+            self.invalidate_summary_cache(book)
 
             # 8. 保存规划书
             self.sm.fm.write_text(book_path / "planning.md", self._generate_planning_doc(planning))
@@ -374,6 +377,8 @@ class NovelEngine:
             report("保存文件", 70, "正在保存设定文件...")
             self.sm.fm.write_text(book_path / "story_bible.md", story_bible)
             self.sm.fm.write_text(book_path / "book_rules.md", book_rules)
+            # 清除摘要缓存，新创建的文件需要重新生成摘要
+            self.invalidate_summary_cache(book)
             self.sm.fm.write_text(book_path / "planning.md", self._generate_planning_doc(planning))
             self.sm.fm.write_text(book_path / "characters.md", characters)
             self.sm.fm.write_text(book_path / "author_intent.md", author_intent)
@@ -405,6 +410,8 @@ class NovelEngine:
                 self.sm.fm.write_text(book_path / "story_bible.md", story_bible)
                 self.sm.fm.write_text(book_path / "book_rules.md", book_rules)
                 self.sm.fm.write_text(book_path / "characters.md", characters)
+                # 清除摘要缓存，修正后的文件需要重新生成摘要
+                self.invalidate_summary_cache(book)
                 report("修正完成", 85, "冲突已自动修正")
 
             # 9. 初始化项目状态
@@ -2162,7 +2169,10 @@ class NovelEngine:
         # 保存最终版本
         book_path = self.workspace / book.path
         self.sm.fm.write_text(book_path / "story_bible.md", current_content)
-        
+
+        # 清除该文档的摘要缓存，下次使用时重新生成
+        self.invalidate_summary_cache(book, "story_bible")
+
         # 保存评审报告
         self._save_doc_audit_report(book, "世界观设定", final_audit_result)
 
@@ -2224,6 +2234,9 @@ class NovelEngine:
         # 保存最终版本
         book_path = self.workspace / book.path
         self.sm.fm.write_text(book_path / "book_rules.md", current_content)
+
+        # 清除该文档的摘要缓存，下次使用时重新生成
+        self.invalidate_summary_cache(book, "book_rules")
 
         # 保存评审报告
         try:
@@ -3776,21 +3789,26 @@ class NovelEngine:
         # 回退默认值
         return "林逸"
 
-    def _generate_book_rules(self, book: BookInfo, genre: str, feedback: str = "", 
+    def _generate_book_rules(self, book: BookInfo, genre: str, feedback: str = "",
                             story_bible: str = "") -> str:
         """生成创作规则"""
         target_words = book.words_per_chapter or 3000
+        chapter_level = get_chapter_level(target_words)
+        level_config = get_level_config(chapter_level)
+        level_guide = get_level_adaptation_guide(chapter_level)
+
         # 如果有反馈，说明是修订模式
         if feedback:
             return self._revise_book_rules(book, genre, feedback)
-        
+
         prompt = f"""请为小说《{book.name}》制定详细的创作规则。
 
 题材: {genre}
 目标平台: {book.platform}
-字数要求: 每章约{book.words_per_chapter}字
+字数要求: 每章约{target_words}字（{chapter_level.value}级别）
 
-{story_bible[:1000] if story_bible else ''}
+【字数级别说明】
+{level_guide}
 
 请生成包含以下部分的创作规则：
 1. 题材规则（该题材必须遵守的创作规范，越详细越好）
@@ -3800,11 +3818,13 @@ class NovelEngine:
 5. 文风要求（符合平台读者喜好的文风建议）
 6. 角色塑造要求（主角、配角、反派的塑造要点）
 7. 伏笔使用规范（如何埋设和回收伏笔）
+8. 章节节奏规范（根据{chapter_level.value}级别的情节点数、钩子数、伏笔密度要求）
 
 要求：
 - 规则要具体、可操作
 - 要符合网文创作的最佳实践
 - 要有针对该题材的特点
+- 章节节奏需符合{chapter_level.value}级别的要求（{level_config.node_count[0]}-{level_config.node_count[1]}个情节点，{level_config.hook_count[0]}-{level_config.hook_count[1]}个钩子）
 
 使用Markdown格式输出。"""
         
@@ -3843,6 +3863,10 @@ class NovelEngine:
     
     def _generate_book_rules_fallback(self, book: BookInfo, genre: str) -> str:
         """创作规则回退模板"""
+        target_words = book.words_per_chapter or 3000
+        chapter_level = get_chapter_level(target_words)
+        level_config = get_level_config(chapter_level)
+
         return f"""# {book.name} 创作规则
 
 ## 一、题材规则
@@ -3850,6 +3874,15 @@ class NovelEngine:
 
 ## 二、爽点节奏
 [打脸/升级/收益兑现的节奏模板]
+
+### {chapter_level.value.upper()}级别章节节奏规范
+- 目标字数：{target_words}字
+- 情节点数：{level_config.node_count[0]}-{level_config.node_count[1]}个
+- 钩子数：{level_config.hook_count[0]}-{level_config.hook_count[1]}个
+- 伏笔数：{level_config.foreshadow_count[0]}-{level_config.foreshadow_count[1]}条
+- 环境描写占比：{level_config.env_ratio[0]}-{level_config.env_ratio[1]}%
+- 心理刻画深度：{level_config.psychological_depth}
+- 对话密度：{level_config.dialogue_density}
 
 ## 三、禁止事项
 - 禁止角色OOC
@@ -5246,9 +5279,14 @@ class NovelEngine:
             result = result[:max_len] + f"\n\n[... 已截断，原文 {len(content)} 字 ...]"
         return result
 
-    def invalidate_summary_cache(self, book_id: str, file_key: str = None):
-        """清除摘要缓存"""
-        cache_dir = self.workspace / book_id / "truth_files" / ".cache"
+    def invalidate_summary_cache(self, book: BookInfo, file_key: str = None):
+        """清除摘要缓存
+
+        Args:
+            book: 书籍对象
+            file_key: 要清除的特定文件key（如 'book_rules'），None 则清除所有
+        """
+        cache_dir = self.workspace / book.path / "truth_files" / ".cache"
         if not cache_dir.exists():
             return
 
@@ -5256,12 +5294,14 @@ class NovelEngine:
             # 清除指定文件缓存
             (cache_dir / f"{file_key}_summary.md").unlink(exist_ok=True)
             (cache_dir / f"{file_key}_meta.json").unlink(exist_ok=True)
+            print(f"[invalidate_summary_cache] 已清除缓存: {file_key}")
         else:
             # 清除所有缓存
             for f in cache_dir.glob("*_summary.md"):
                 f.unlink()
             for f in cache_dir.glob("*_meta.json"):
                 f.unlink()
+            print(f"[invalidate_summary_cache] 已清除所有缓存")
 
     def _init_project_state(self, book: BookInfo):
         """初始化项目状态"""
@@ -5435,6 +5475,9 @@ class NovelEngine:
         genre = planning.get('genre', book.genre or '都市')
         summary = planning.get('梗概', '')
         target_words = book.words_per_chapter or 3000
+        chapter_level = get_chapter_level(target_words)
+        level_config = get_level_config(chapter_level)
+        level_guide = get_level_adaptation_guide(chapter_level)
 
         prompt = f"""请为小说《{book.name}》生成【当前焦点】文档。
 
@@ -5445,6 +5488,12 @@ class NovelEngine:
 
 ## 故事梗概
 {summary}
+
+## 目标字数级别
+{chapter_level.value}（每章约{target_words}字）
+
+【字数级别说明】
+{level_guide}
 
 请从以下维度思考：
 
@@ -5462,9 +5511,12 @@ class NovelEngine:
 - 信息过载
 - 悬念设置不当
 
-### 4. 节奏把控
-- 前三章应该多快的节奏
-- 每章应该包含多少个情节点
+### 4. 节奏把控（按级别动态调整）
+根据{chapter_level.value}级别要求：
+- 每章情节点数：{level_config.node_count[0]}-{level_config.node_count[1]}个
+- 每章钩子数：{level_config.hook_count[0]}-{level_config.hook_count[1]}个
+- 每章伏笔数：{level_config.foreshadow_count[0]}-{level_config.foreshadow_count[1]}条
+- 环境描写占比：{level_config.env_ratio[0]}-{level_config.env_ratio[1]}%
 
 请用 Markdown 格式输出，结构清晰。"""
 
