@@ -1199,6 +1199,11 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
                 last_llm_error = ""
 
                 while llm_retry_count < max_llm_retries:
+                    # 检查全局终止事件
+                    if task_manager.is_all_terminated():
+                        task_manager.update_task(task.id, status=TaskStatus.TERMINATED, message="任务已被终止")
+                        task_manager.unlock_chapter(data.book_id, chapter_num)
+                        return
                     try:
                         result = engine.write_chapter(chapter_num, task_id=task.id)
                         break  # 成功，跳出重试循环

@@ -2708,6 +2708,9 @@ class NovelEngine:
         # 更新步骤状态：生成细纲
         if task_id:
             from api.task_manager import task_manager, StepStatus
+            # 检查是否已终止
+            if task_manager.is_all_terminated():
+                return {"success": False, "message": "任务已被终止", "content": ""}
             task_manager.update_step_status(task_id, 0, StepStatus.RUNNING)
         if regenerate:
             # 重写模式：从头开始重新生成并审计细纲

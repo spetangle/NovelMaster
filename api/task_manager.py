@@ -391,8 +391,6 @@ class TaskManager:
         with self._lock:
             # 设置全局终止事件
             self._all_tasks_event.set()
-            # 重置以便下次使用
-            self._all_tasks_event = Event()
             # 终止所有正在运行的任务
             for task_id, event in self._cancel_events.items():
                 task = self._tasks.get(task_id)
@@ -402,6 +400,11 @@ class TaskManager:
                                    message="任务已被终止")
                     count += 1
         return count
+
+    def reset_terminate_all_event(self):
+        """重置全局终止事件（在所有任务处理完毕后调用）"""
+        with self._lock:
+            self._all_tasks_event = Event()
 
     def is_cancelled(self, task_id: str) -> bool:
         """检查任务是否被取消"""
