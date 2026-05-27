@@ -274,6 +274,7 @@ class NovelEngine:
             # 1. 解析简报生成规划书
             report("解析简报", 5, f"正在解析创作简报...")
             planning = self._parse_brief(brief)
+            check_cancel_and_raise()
             
             # 提取书名
             temp_name = ""
