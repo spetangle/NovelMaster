@@ -5162,7 +5162,7 @@ class NovelEngine:
         for key, (file_path, max_len) in static_files.items():
             content = safe_read(file_path)
             if content:
-                files[key] = self._get_cached_summary(book.id, key, content, max_len)
+                files[key] = self._get_cached_summary(book, key, content, max_len)
             else:
                 files[key] = ""
 
@@ -5189,12 +5189,12 @@ class NovelEngine:
 
         return files
 
-    def _get_cached_summary(self, book_id: str, file_key: str, content: str, max_len: int) -> str:
+    def _get_cached_summary(self, book: BookInfo, file_key: str, content: str, max_len: int) -> str:
         """获取缓存的摘要，或生成新摘要并缓存"""
         import hashlib
         import json
 
-        cache_dir = self.workspace / book_id / "truth_files" / ".cache"
+        cache_dir = self.workspace / book.path / "truth_files" / ".cache"
         cache_dir.mkdir(exist_ok=True)
 
         cache_file = cache_dir / f"{file_key}_summary.md"
@@ -5206,18 +5206,19 @@ class NovelEngine:
             try:
                 meta = json.loads(cache_meta.read_text())
                 if meta.get('hash') == content_hash:
-                    print(f"[_get_cached_summary] Cache hit: {file_key}")
+                    print(f"[_get_cached_summary] ✓ Cache hit: {file_key} ({len(cache_file.read_text())} chars)")
                     return cache_file.read_text()
             except Exception:
                 pass
 
-        print(f"[_get_cached_summary] Cache miss: {file_key}, generating summary...")
+        print(f"[_get_cached_summary] ↻ Cache miss: {file_key} ({len(content)} chars), generating summary (max: {max_len})...")
         # 生成新摘要
         summary = self._extract_summary(content, max_len)
 
         # 写入缓存
         cache_file.write_text(summary)
         cache_meta.write_text(json.dumps({'hash': content_hash}))
+        print(f"[_get_cached_summary] ✓ Summary saved: {file_key} → {len(summary)} chars")
 
         return summary
 
