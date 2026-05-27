@@ -15,21 +15,21 @@ from pydantic import BaseModel
 # 尝试导入核心模块
 try:
     from core.novel_engine import NovelEngine
-    from core.llm_service import LLMConfig
+    from core.llm_service import LLMConfig, LLMError
     from core.models import BookInfo
 except ImportError:
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from core.novel_engine import NovelEngine
-    from core.llm_service import LLMConfig
+    from core.llm_service import LLMConfig, LLMError
     from core.models import BookInfo
 
 # 导入任务管理器
 try:
-    from api.task_manager import task_manager, TaskStatus
+    from api.task_manager import task_manager, TaskStatus, StepStatus
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent))
-    from task_manager import task_manager, TaskStatus
+    from task_manager import task_manager, TaskStatus, StepStatus
 
 # 初始化引擎
 workspace = os.getenv('WORKSPACE', './workspace')
@@ -894,20 +894,47 @@ async def batch_write_chapters(data: BatchWriteRequest):
     """批量创作章节"""
     start_chapter = data.start_chapter
     end_chapter = data.end_chapter
-    
+
     if start_chapter < 1 or end_chapter < start_chapter:
         raise HTTPException(status_code=400, detail="参数错误")
-    
+
     results = []
     for i in range(start_chapter, end_chapter + 1):
-        result = engine.write_chapter(i)
-        results.append({
-            "chapter_num": i,
-            "success": result.get('success', False),
-            "message": result.get('message', ''),
-            "score": result.get('audit_result', {}).get('chapter_score', 0)
-        })
-    
+        # 每个章节最多重试3次
+        max_retries = 3
+        llm_retry_count = 0
+        last_error = ""
+        chapter_success = False
+
+        while llm_retry_count < max_retries:
+            try:
+                result = engine.write_chapter(i)
+                results.append({
+                    "chapter_num": i,
+                    "success": result.get('success', False),
+                    "message": result.get('message', ''),
+                    "score": result.get('audit_result', {}).get('chapter_score', 0)
+                })
+                chapter_success = result.get('success', False)
+                break  # 成功，跳出重试循环
+            except LLMError as e:
+                llm_retry_count += 1
+                last_error = str(e)
+                if llm_retry_count < max_retries:
+                    import time
+                    retry_msg = f"第{i}章 LLM错误（第{llm_retry_count}/{max_retries}次），等待30秒后自动重试..."
+                    print(f"[batch_write] {retry_msg}")
+                    time.sleep(30)
+                else:
+                    results.append({
+                        "chapter_num": i,
+                        "success": False,
+                        "message": f"LLM错误已达最大重试次数: {e}",
+                        "score": 0
+                    })
+        if not chapter_success and llm_retry_count >= max_retries:
+            break  # 章节失败后停止批量创作
+
     return {
         "success": True,
         "results": results,
@@ -1129,7 +1156,16 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
     
     # 创建后台任务
     task = task_manager.create_task(f"{action_name}第{chapter_num}章", book_id=data.book_id, task_type="write_chapter")
-    
+
+    # 初始化任务步骤
+    task_manager.init_task_steps(task.id, [
+        "生成细纲",      # 步骤0
+        "编译上下文",    # 步骤1
+        "生成正文",      # 步骤2
+        "调整字数",      # 步骤3（字数偏差>15%时执行，否则跳过）
+        "质量评审"       # 步骤4
+    ])
+
     # 锁定章节
     task_manager.lock_chapter(data.book_id, chapter_num, task.id)
     
@@ -1157,32 +1193,60 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
                 task_manager.update_task(task.id, progress=15,
                                         message=f"正在生成{chapter_title}细纲...", step="生成细纲")
 
-                result = engine.write_chapter(chapter_num)
+                # LLM错误重试机制（最多3次，每次等待30秒）
+                max_llm_retries = 3
+                llm_retry_count = 0
+                last_llm_error = ""
+
+                while llm_retry_count < max_llm_retries:
+                    try:
+                        result = engine.write_chapter(chapter_num, task_id=task.id)
+                        break  # 成功，跳出重试循环
+                    except LLMError as e:
+                        llm_retry_count += 1
+                        last_llm_error = str(e)
+                        if llm_retry_count < max_llm_retries:
+                            # 未达到最大重试次数，等待30秒后重试
+                            retry_msg = f"LLM错误（第{llm_retry_count}/{max_llm_retries}次），等待30秒后自动重试... ({e})"
+                            print(f"[{task.id}] {retry_msg}")
+                            task_manager.update_task(task.id, progress=5,
+                                message=retry_msg, step="LLM重试")
+                            task_manager.mark_retry_pending(task.id, str(e))
+                            import time
+                            time.sleep(30)
+                            # 重置任务状态继续执行
+                            task_manager.retry_task(task.id)
+                            task_manager.update_task(task.id, status=TaskStatus.RUNNING, progress=15,
+                                message=f"正在重试生成{chapter_title}（第{llm_retry_count+1}次）...", step="重试")
+                        else:
+                            # 达到最大重试次数，终止任务
+                            error_msg = f"LLM错误已达最大重试次数（{max_llm_retries}次），任务终止: {e}"
+                            print(f"[{task.id}] ✗ {error_msg}")
+                            task_manager.update_task(task.id, status=TaskStatus.FAILED,
+                                message=error_msg, error=str(e), step="LLM重试失败")
+                            task_manager.unlock_chapter(data.book_id, chapter_num)
+                            return
 
                 # 检查是否需要异步调整字数
                 if result.get('pending_adjust'):
                     task_manager.update_task(task.id, progress=70,
                                             message=f"正在调整{chapter_title}字数...", step="调整字数")
 
-                    # 启动后台调整任务
+                    # 启动后台调整任务（不等待，避免卡死）
                     adjust_task = task_manager.create_task(
                         f"调整第{chapter_num}章字数",
                         book_id=data.book_id,
                         task_type="word_adjust"
                     )
+                    # 初始化字数调整步骤
+                    task_manager.init_task_steps(adjust_task.id, ["调整字数"])
                     engine.adjust_chapter_word_count_async(book.id, chapter_num, adjust_task.id)
 
-                    # 等待调整完成（标准LLM超时600秒）
-                    import time
-                    wait_start = time.time()
-                    while time.time() - wait_start < 600:
-                        adjust_task = task_manager.get_task(adjust_task.id)
-                        if adjust_task and adjust_task.status in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.TERMINATED):
-                            break
-                        time.sleep(0.5)
+                    # 不再等待，前端通过轮询 adjust_task 状态获知进度
+                    # 原：while 循环等待 -> 已移除，避免卡死进程
 
                     task_manager.update_task(task.id, progress=75,
-                                            message=f"{chapter_title}字数调整完成，正在加载内容...", step="加载内容")
+                                            message=f"{chapter_title}字数调整已启动，请在任务列表查看进度...", step="等待字数调整")
 
                 # 创作完成后自动评审
                 chapter_info = engine.get_chapter_content(data.book_id, chapter_num)
@@ -1377,10 +1441,39 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
                     # 删除原文件
                     chapter_path.unlink()
                     
-                    task_manager.update_task(task.id, progress=15, 
+                    task_manager.update_task(task.id, progress=15,
                                             message=f"已将旧版本保存到trash: {backup_name}", step="备份旧版本")
-                
-                result = engine.write_chapter(chapter_num)
+
+                # LLM错误重试机制（最多3次）
+                max_retries = 3
+                llm_retry_count = 0
+                last_error = ""
+                write_success = False
+
+                while llm_retry_count < max_retries:
+                    try:
+                        result = engine.write_chapter(chapter_num)
+                        write_success = True
+                        break
+                    except LLMError as e:
+                        llm_retry_count += 1
+                        last_error = str(e)
+                        if llm_retry_count < max_retries:
+                            import time
+                            retry_msg = f"LLM错误（第{llm_retry_count}/{max_retries}次），等待30秒后自动重试..."
+                            print(f"[{task.id}] {retry_msg}")
+                            task_manager.update_task(task.id, progress=15, message=retry_msg, step="LLM重试")
+                            task_manager.mark_retry_pending(task.id, str(e))
+                            time.sleep(30)
+                            task_manager.retry_task(task.id)
+                        else:
+                            task_manager.update_task(task.id, status=TaskStatus.FAILED,
+                                message=f"LLM错误已达最大重试次数: {e}", error=str(e), step="LLM重试失败")
+                            task_manager.unlock_chapter(data.book_id, chapter_num)
+                            return
+
+                if not write_success:
+                    return
 
                 # 记录修订日志（如果结果包含审核信息）
                 if result.get('audit_result'):
@@ -1490,13 +1583,39 @@ async def auto_write(data: AutoWriteRequest):
                                            message=f"任务已取消，已完成{idx}章", result=results)
                     return
 
-                task_manager.update_task(task.id, progress=int((idx / total) * 80), 
+                task_manager.update_task(task.id, progress=int((idx / total) * 80),
                                         message=f"正在创作第{i}章...", step=f"创作第{i}章")
-                result = engine.write_chapter(i)
-                results.append({
-                    "chapter_num": i,
-                    "success": result.get('success', False)
-                })
+
+                # LLM错误重试机制（最多3次）
+                max_retries = 3
+                llm_retry_count = 0
+                chapter_success = False
+
+                while llm_retry_count < max_retries:
+                    try:
+                        result = engine.write_chapter(i)
+                        results.append({
+                            "chapter_num": i,
+                            "success": result.get('success', False)
+                        })
+                        chapter_success = True
+                        break
+                    except LLMError as e:
+                        llm_retry_count += 1
+                        if llm_retry_count < max_retries:
+                            import time
+                            print(f"[auto_write] 第{i}章 LLM错误（第{llm_retry_count}/{max_retries}次），等待30秒...")
+                            time.sleep(30)
+                        else:
+                            results.append({
+                                "chapter_num": i,
+                                "success": False,
+                                "message": f"LLM错误达最大重试次数: {e}"
+                            })
+
+                if not chapter_success:
+                    # 某个章节失败，停止后续章节创作
+                    break
             
             task_manager.update_task(task.id, progress=100, message="完成", result=results, 
                                     status=TaskStatus.SUCCESS)
@@ -1544,6 +1663,85 @@ async def cancel_task(task_id: str):
 
     task_manager.cancel_task(task_id)
     return {"success": True, "message": "任务已取消"}
+
+
+@router.post("/tasks/{task_id}/retry")
+async def retry_task(task_id: str):
+    """手动重试失败的任务（LLM错误后）"""
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    if task.status != TaskStatus.FAILED:
+        raise HTTPException(status_code=400, detail="只能重试失败的任务")
+
+    success = task_manager.retry_task(task_id)
+    if not success:
+        return {"success": False, "message": "重试失败"}
+
+    return {
+        "success": True,
+        "message": "任务已重置，请调用原任务接口继续执行",
+        "task_id": task_id,
+        "retry_count": task.retry_count
+    }
+
+
+@router.get("/tasks/{task_id}/checklist")
+async def get_task_checklist(task_id: str):
+    """获取任务步骤 checklist"""
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    return {
+        "success": True,
+        "task_id": task_id,
+        "task_status": task.status.value,
+        "current_step_index": task.current_step_index,
+        "checklist": task_manager.get_task_checklist(task_id)
+    }
+
+
+@router.post("/tasks/{task_id}/resume")
+async def resume_task(task_id: str):
+    """从断点恢复任务，自动从第一个未完成步骤继续"""
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    next_step_index = task_manager.resume_task(task_id)
+    if next_step_index < 0:
+        return {"success": True, "message": "任务已完成，无须恢复", "task_id": task_id}
+
+    next_step_name = task.steps[next_step_index].name if next_step_index < len(task.steps) else ""
+    return {
+        "success": True,
+        "message": f"任务已恢复，将从步骤「{next_step_name}」（第{next_step_index + 1}步）继续",
+        "task_id": task_id,
+        "next_step_index": next_step_index,
+        "next_step_name": next_step_name
+    }
+
+
+@router.post("/tasks/{task_id}/steps/{step_index}/skip")
+async def skip_step(task_id: str, step_index: int, reason: str = ""):
+    """手动跳过指定步骤"""
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    success = task_manager.skip_step(task_id, step_index, reason)
+    if not success:
+        raise HTTPException(status_code=400, detail="跳过步骤失败")
+
+    step_name = task.steps[step_index].name if step_index < len(task.steps) else ""
+    return {
+        "success": True,
+        "message": f"步骤「{step_name}」已跳过",
+        "task_id": task_id,
+        "step_index": step_index
+    }
 
 
 @router.post("/tasks/terminate-all")

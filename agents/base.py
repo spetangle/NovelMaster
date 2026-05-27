@@ -12,6 +12,7 @@ from datetime import datetime
 
 from .loader import AgentRole, AgentLoader
 from core.word_count_template import get_chapter_level, get_level_adaptation_guide, format_level_prompt
+from core.llm_service import LLMError
 
 
 @dataclass
@@ -70,6 +71,7 @@ class UniversalAgent:
         """
         import time
         start_time = time.time()
+        execution_time = 0.0
 
         result = AgentResult(
             agent_name=self.role.name,
@@ -103,14 +105,16 @@ class UniversalAgent:
                 else:
                     result.error = "JSON 解析失败"
             else:
-                response = self.llm.generate(prompt, system_prompt, self.role.name)
-                result.content = response
-                result.success = not response.startswith("[生成失败:")
-                if not result.success:
-                    result.error = response
-                    print(f"[Agent] {self.role.name} 执行失败: {response[:100]}")
-                else:
+                try:
+                    response = self.llm.generate(prompt, system_prompt, self.role.name)
+                    result.content = response
+                    result.success = True
                     print(f"[Agent] {self.role.name} 执行完成 ({len(response)} 字符)")
+                except LLMError as e:
+                    result.content = ""
+                    result.success = False
+                    result.error = str(e)
+                    print(f"[Agent] {self.role.name} 执行失败: {str(e)[:100]}")
 
         except Exception as e:
             print(f"[Agent] {self.role.name} 执行异常: {str(e)} [{execution_time:.1f}s]")

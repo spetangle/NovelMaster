@@ -11,6 +11,14 @@ from pathlib import Path
 from dataclasses import dataclass, field
 
 
+class LLMError(Exception):
+    """LLM调用异常"""
+    def __init__(self, message: str, agent_name: str = ""):
+        self.message = message
+        self.agent_name = agent_name
+        super().__init__(f"[{agent_name}] {message}" if agent_name else message)
+
+
 # ============== LLM 配置 ==============
 
 @dataclass
@@ -126,6 +134,11 @@ class LLMClient:
         if json_mode:
             params["response_format"] = {"type": "json_object"}
 
+        # MiniMax max_tokens 上限为 2048，需要限制
+        if "minimaxi" in self.config.base_url.lower() and params.get("max_tokens", 2048) > 2048:
+            params["max_tokens"] = 2048
+            print(f"[LLM] MiniMax max_tokens 已限制为 2048")
+
         payload = json.dumps(params).encode('utf-8')
 
         for attempt in range(self.config.retry_times):
@@ -141,20 +154,33 @@ class LLMClient:
                 )
 
                 with urllib.request.urlopen(req, timeout=self.config.timeout) as response:
+                    print(f"[LLM] ✅ 请求成功，响应码: {response.status}")
                     result = json.loads(response.read().decode('utf-8'))
 
                     if "choices" in result and len(result["choices"]) > 0:
                         content = result["choices"][0]["message"]["content"]
                         return True, content
+                    if "content" in result:
+                        content = result["content"][0]["text"] if result["content"] else ""
+                        return True, content
 
                 return False, "响应格式异常"
 
+            except urllib.error.HTTPError as e:
+                body = e.read().decode('utf-8') if e.fp else ""
+                print(f"[LLM] ⚠️ HTTPError {e.code} 捕获，响应体: {body[:800]}")
+                if attempt < self.config.retry_times - 1:
+                    time.sleep(self.config.retry_delay)
+                    continue
+                return False, f"网络错误: HTTP {e.code} - {body[:200]}"
             except urllib.error.URLError as e:
+                print(f"[LLM] ⚠️ URLError 捕获: {e}")
                 if attempt < self.config.retry_times - 1:
                     time.sleep(self.config.retry_delay)
                     continue
                 return False, f"网络错误: {str(e)}"
             except Exception as e:
+                print(f"[LLM] ⚠️ Exception 捕获: {type(e).__name__}: {e}")
                 return False, f"调用失败: {str(e)}"
 
         return False, "重试次数耗尽"
@@ -196,16 +222,23 @@ class LLMManager:
         agent_name: str = "System",
         **kwargs
     ) -> str:
-        """生成内容"""
+        """生成内容
+
+        Raises:
+            LLMError: 当生成失败时抛出异常，不再返回错误字符串
+        """
         print(f"[LLM] {agent_name} 正在生成...")
         success, result = self.client.call(prompt, system_prompt, **kwargs)
 
         if success:
+            if not result or not result.strip():
+                raise LLMError(f"{agent_name} 返回内容为空", agent_name)
             print(f"[LLM] {agent_name} 生成完成 ({len(result)} 字符)")
             return result
         else:
-            print(f"[LLM] {agent_name} 生成失败: {result}")
-            return f"[生成失败: {result}]"
+            msg = f"{agent_name} 生成失败: {result}"
+            print(f"[LLM] {msg}")
+            raise LLMError(msg, agent_name)
 
     def generate_json(
         self,
@@ -720,12 +753,25 @@ class LLMService:
 请返回JSON格式评分结果。""",
     }
 
+    def _detect_role(self, system_prompt: str) -> str:
+        """根据system_prompt内容检测Agent角色名（如 planner/auditor/architect 等）"""
+        if not system_prompt:
+            return "(无system prompt)"
+        # 反向匹配 SYSTEM_PROMPTS 字典
+        for role_name, role_prompt in self.SYSTEM_PROMPTS.items():
+            # 取前80个字符比较（不同调用可能略有差异）
+            if system_prompt[:80].strip() == role_prompt[:80].strip():
+                return role_name
+        # 没有精确匹配时取 system_prompt 第一行作为提示
+        first_line = system_prompt.split('\n')[0].strip()
+        return first_line[:50] + "..." if len(first_line) > 50 else first_line
+
     def call(
         self,
         prompt: str,
         system_prompt: str = "",
         json_mode: bool = False,
-        agent_name: str = "Unknown",
+        agent_name: str = "",
         **kwargs
     ) -> Tuple[bool, str]:
         """调用大模型
@@ -734,11 +780,16 @@ class LLMService:
             prompt: 用户输入
             system_prompt: 系统提示词
             json_mode: 是否JSON模式
-            agent_name: Agent名称（用于日志）
+            agent_name: Agent名称（用于日志，留空则自动检测）
             **kwargs: 支持 timeout（超时秒数）、max_tokens、temperature、model
         """
         import urllib.request
         import urllib.error
+
+        # 自动检测角色名
+        role_name = self._detect_role(system_prompt)
+        if not agent_name:
+            agent_name = role_name
 
         params = {
             "model": kwargs.get("model", self.config.model),
@@ -756,6 +807,11 @@ class LLMService:
         if json_mode:
             params["response_format"] = {"type": "json_object"}
 
+        # MiniMax max_tokens 上限为 2048，需要限制
+        if "minimaxi" in self.config.base_url.lower() and params.get("max_tokens", 2048) > 2048:
+            params["max_tokens"] = 2048
+            print(f"[LLM] MiniMax max_tokens 已限制为 2048")
+
         payload = json.dumps(params).encode('utf-8')
 
         start_time = time.time()
@@ -763,8 +819,11 @@ class LLMService:
 
         for attempt in range(self.config.retry_times):
             try:
+                req_url = f"{self.config.base_url}/chat/completions"
+                print(f"[LLM] [{agent_name}] 请求URL: POST {req_url}")
+
                 req = urllib.request.Request(
-                    f"{self.config.base_url}/chat/completions",
+                    req_url,
                     data=payload,
                     headers={
                         "Authorization": f"Bearer {self.config.api_key}",
@@ -783,7 +842,7 @@ class LLMService:
                         # 记录成功日志（使用原始内容用于调试）
                         self._write_log(f"LLM调用成功 [{agent_name}]", {
                             "Agent": agent_name,
-                            "Role": agent_name,  # Agent role name (writer, architect, etc.)
+                            "Role": role_name,
                             "Model": params["model"],
                             "System Prompt": system_prompt[:500] if system_prompt else "(无)",
                             "User Prompt": prompt[:2000],
@@ -801,6 +860,23 @@ class LLMService:
                 print(f"[LLM] [{agent_name}] 响应格式异常")
                 return False, "响应格式异常"
 
+            except urllib.error.HTTPError as e:
+                try:
+                    body = e.read().decode('utf-8')
+                except Exception:
+                    body = f"(无法读取响应体: {e})"
+                print(f"[LLM] ⚠️ HTTPError {e.code} 捕获，响应体: {body[:800]}")
+                if attempt < self.config.retry_times - 1:
+                    time.sleep(self.config.retry_delay)
+                    continue
+                # 记录HTTP错误日志
+                self._write_log(f"LLM HTTP错误 [{agent_name}]", {
+                    "Agent": agent_name,
+                    "Model": params["model"],
+                    "HTTP Code": e.code,
+                    "Response Body": body[:2000]
+                })
+                return False, f"网络错误: HTTP {e.code} - {body[:200]}"
             except urllib.error.URLError as e:
                 if attempt < self.config.retry_times - 1:
                     time.sleep(self.config.retry_delay)
@@ -949,7 +1025,7 @@ class LLMService:
         self,
         prompt: str,
         system_prompt: str = "",
-        agent_name: str = "System",
+        agent_name: str = "",
         max_tokens: int = None,
         timeout: int = None
     ) -> str:
@@ -980,7 +1056,7 @@ class LLMService:
         self,
         prompt: str,
         system_prompt: str = "",
-        agent_name: str = "System",
+        agent_name: str = "",
         callback=None
     ) -> str:
         """流式生成内容"""

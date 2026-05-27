@@ -21,6 +21,35 @@ class TaskStatus(Enum):
     TERMINATED = "terminated"
 
 
+class StepStatus(Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCESS = "success"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+@dataclass
+class TaskStep:
+    """任务步骤"""
+    name: str
+    status: StepStatus = StepStatus.PENDING
+    result_file: str = ""
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    error: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "status": self.status.value,
+            "result_file": self.result_file,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "error": self.error
+        }
+
+
 @dataclass
 class Task:
     """任务对象"""
@@ -34,10 +63,15 @@ class Task:
     step: str = ""  # 当前步骤名称
     created_at: float = field(default_factory=time.time)
     completed_at: Optional[float] = None
-    steps: list = field(default_factory=list)
+    steps: list = field(default_factory=list)  # 步骤列表
     book_id: str = ""  # 关联的书籍ID
     task_type: str = ""  # 任务类型：create_book, write, auto_write 等
-    
+    retry_count: int = 0  # 当前重试次数
+    max_retries: int = 3  # 最大重试次数
+    llm_error: str = ""  # 最近一次LLM错误信息
+    pending_retry: bool = False  # 是否在等待重试
+    current_step_index: int = 0  # 当前步骤索引
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -50,9 +84,14 @@ class Task:
             "step": self.step,
             "created_at": self.created_at,
             "completed_at": self.completed_at,
-            "steps": self.steps,
+            "steps": [s.to_dict() if isinstance(s, TaskStep) else s for s in self.steps],
             "book_id": self.book_id,
-            "type": self.task_type
+            "type": self.task_type,
+            "retry_count": self.retry_count,
+            "max_retries": self.max_retries,
+            "llm_error": self.llm_error,
+            "pending_retry": self.pending_retry,
+            "current_step_index": self.current_step_index
         }
 
 
@@ -193,6 +232,158 @@ class TaskManager:
                                message="任务已被终止")
             return True
         return False
+
+    def retry_task(self, task_id: str) -> bool:
+        """重置任务状态，允许重新执行（用于手动重试）"""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return False
+            # 只允许对失败的任务进行重试
+            if task.status != TaskStatus.FAILED:
+                return False
+            task.status = TaskStatus.PENDING
+            task.progress = 0
+            task.pending_retry = False
+            task.llm_error = ""
+            # 重置取消事件
+            if task_id in self._cancel_events:
+                self._cancel_events[task_id].clear()
+            else:
+                self._cancel_events[task_id] = Event()
+            return True
+
+    def mark_retry_pending(self, task_id: str, error_msg: str) -> bool:
+        """标记任务进入LLM错误重试等待状态"""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return False
+            task.retry_count += 1
+            task.llm_error = error_msg
+            task.pending_retry = True
+            task.status = TaskStatus.FAILED
+            task.message = f"LLM错误（第{task.retry_count}/{task.max_retries}次），等待重试..."
+            return True
+
+    def init_task_steps(self, task_id: str, steps_config: list) -> bool:
+        """初始化任务步骤列表
+
+        Args:
+            task_id: 任务ID
+            steps_config: 步骤配置列表，如 ["生成细纲", "生成正文", "调整字数", "质量评审"]
+
+        Returns:
+            是否成功
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return False
+            task.steps = [TaskStep(name=name) for name in steps_config]
+            task.current_step_index = 0
+            return True
+
+    def update_step_status(self, task_id: str, step_index: int, status: StepStatus,
+                           result_file: str = "", error: str = "") -> bool:
+        """更新步骤状态
+
+        Args:
+            task_id: 任务ID
+            step_index: 步骤索引
+            status: 新状态
+            result_file: 成果文件路径（可选）
+            error: 错误信息（可选）
+
+        Returns:
+            是否成功
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return False
+            if step_index < 0 or step_index >= len(task.steps):
+                return False
+
+            step = task.steps[step_index]
+            step.status = status
+            step.result_file = result_file
+            step.error = error
+
+            now = time.time()
+            if status == StepStatus.RUNNING:
+                step.started_at = now
+            elif status in (StepStatus.SUCCESS, StepStatus.SKIPPED, StepStatus.FAILED):
+                step.completed_at = now
+
+            if status == StepStatus.RUNNING:
+                task.current_step_index = step_index
+                task.step = step.name
+                task.status = TaskStatus.RUNNING
+
+            return True
+
+    def get_task_checklist(self, task_id: str) -> Optional[list]:
+        """获取任务步骤 checklist
+
+        Returns:
+            步骤列表（每个元素是 dict），如果任务不存在则返回 None
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return None
+            return task.to_dict().get("steps", [])
+
+    def get_next_pending_step(self, task_id: str) -> int:
+        """获取下一个未完成的步骤索引，用于断点恢复
+
+        Returns:
+            下一个步骤索引，如果全部完成则返回 -1
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return -1
+            for i, step in enumerate(task.steps):
+                if step.status in (StepStatus.PENDING, StepStatus.FAILED):
+                    return i
+            return -1
+
+    def skip_step(self, task_id: str, step_index: int, reason: str = "") -> bool:
+        """跳过指定步骤
+
+        Args:
+            task_id: 任务ID
+            step_index: 步骤索引
+            reason: 跳过原因
+
+        Returns:
+            是否成功
+        """
+        return self.update_step_status(task_id, step_index, StepStatus.SKIPPED, error=reason)
+
+    def resume_task(self, task_id: str) -> int:
+        """恢复任务，从第一个未完成步骤继续
+
+        Returns:
+            开始执行的步骤索引，如果全部完成则返回 -1
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if not task:
+                return -1
+            next_step = self.get_next_pending_step(task_id)
+            if next_step >= 0:
+                task.status = TaskStatus.RUNNING
+                task.pending_retry = False
+                task.llm_error = ""
+                # 重置取消事件
+                if task_id in self._cancel_events:
+                    self._cancel_events[task_id].clear()
+                else:
+                    self._cancel_events[task_id] = Event()
+            return next_step
 
     def terminate_all_tasks(self) -> int:
         """终止所有运行中的任务，返回终止的任务数量"""

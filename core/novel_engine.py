@@ -13,7 +13,7 @@ from datetime import datetime
 from dataclasses import asdict
 
 from .models import BookInfo, ChapterInfo, ChapterStatus, AuditResult, AuditDecision, HookInfo, GlobalConfig, AuditLogTable, ChapterAuditLog
-from .llm_service import LLMService, MultiProviderLLMConfig as LLMConfig
+from .llm_service import LLMService, MultiProviderLLMConfig as LLMConfig, LLMError
 from .file_manager import FileManager
 from .state_manager import StateManager
 from .word_count_template import get_chapter_level, get_level_config, get_level_adaptation_guide, format_level_prompt, CHAPTER_LEVEL_CONFIGS
@@ -2667,7 +2667,7 @@ class NovelEngine:
 
     # ============== 章节创作 ==============
 
-    def write_chapter(self, chapter_num: int, revise: bool = False, regenerate: bool = False) -> Dict[str, Any]:
+    def write_chapter(self, chapter_num: int, revise: bool = False, regenerate: bool = False, task_id: str = None) -> Dict[str, Any]:
         """
         章节创作工作流
 
@@ -2675,6 +2675,7 @@ class NovelEngine:
             chapter_num: 章节编号 (0=前言, 1+=正文)
             revise: 是否为修订模式（基于上一次细纲和评审报告修改内容）
             regenerate: 是否为重写模式（从细纲开始重新生成）
+            task_id: 任务ID（用于步骤状态更新）
 
         Returns:
             章节创作结果
@@ -2704,6 +2705,10 @@ class NovelEngine:
 
         # 1. 生成并审计章节细纲（含自动修订循环，最多3次，选最优）
         print(f"[write_chapter] 步骤1: 生成章节细纲...")
+        # 更新步骤状态：生成细纲
+        if task_id:
+            from api.task_manager import task_manager, StepStatus
+            task_manager.update_step_status(task_id, 0, StepStatus.RUNNING)
         if regenerate:
             # 重写模式：从头开始重新生成并审计细纲
             outline = self._generate_and_audit_outline(book, chapter_num, revise=True)
@@ -2723,6 +2728,14 @@ class NovelEngine:
             outline_path = self.workspace / book.path / "chapters" / f"outline_{chapter_num}.md"
             self.sm.fm.write_text(outline_path, outline)
             print(f"[write_chapter] 细纲已保存: {outline_path}")
+            # 更新步骤状态：生成细纲 → 完成
+            if task_id:
+                task_manager.update_step_status(task_id, 0, StepStatus.SUCCESS, result_file=str(outline_path))
+        else:
+            # 细纲生成失败，标记步骤失败
+            if task_id:
+                task_manager.update_step_status(task_id, 0, StepStatus.FAILED, error="细纲生成失败")
+            print(f"[write_chapter] 警告：细纲为空，继续流程...")
 
         # 2. 加载真相文件
         print(f"[write_chapter] 步骤2: 加载真相文件...")
@@ -2731,11 +2744,17 @@ class NovelEngine:
 
         # 3. 编译上下文
         print(f"[write_chapter] 步骤3: 编译上下文...")
+        if task_id:
+            task_manager.update_step_status(task_id, 1, StepStatus.RUNNING)
         context = self._compile_context(book, chapter_num, outline, truth_files)
         print(f"[write_chapter] 上下文编译完成，长度: {len(context)} 字")
+        if task_id:
+            task_manager.update_step_status(task_id, 1, StepStatus.SUCCESS)
 
         # 4. 生成正文
         print(f"[write_chapter] 步骤4: 生成章节正文（目标字数: {book.words_per_chapter}字）...")
+        if task_id:
+            task_manager.update_step_status(task_id, 2, StepStatus.RUNNING)
         try:
             content = self._generate_chapter_content(book, chapter_num, context, outline, revise=revise, revise_reference=previous_audit_report)
             print(f"[write_chapter] 正文生成完成，长度: {len(content)} 字")
@@ -2758,6 +2777,9 @@ class NovelEngine:
                 else:
                     content = f"# 第 {chapter_num} 章\n\n[生成失败，请重试]\n"
                     self.sm.fm.write_text(chapter_path, content)
+            # 正文生成失败，标记步骤失败
+            if task_id:
+                task_manager.update_step_status(task_id, 2, StepStatus.FAILED, error=str(e))
             return {"success": False, "message": str(e), "content": content}
 
         # 5. 保存正文
@@ -2768,6 +2790,10 @@ class NovelEngine:
         initial_content = self._filter_llm_output(content)
         self.sm.fm.write_text(chapter_path, initial_content)
 
+        # 更新步骤状态：生成正文 → 完成
+        if task_id:
+            task_manager.update_step_status(task_id, 2, StepStatus.SUCCESS, result_file=str(chapter_path))
+
         # 检查是否需要字数调整
         clean_content = self._clean_content(initial_content)
         current_words = len(clean_content)
@@ -2776,8 +2802,11 @@ class NovelEngine:
         deviation_percent = abs(deviation) / target_words * 100 if target_words > 0 else 0
         need_adjust = deviation_percent > 15 or abs(deviation) > 500
 
-        # 如果需要调整，返回pending_adjust标记让前端触发异步任务
+        # 如果需要调整，步骤3（调整字数）标记为PENDING，步骤4（质量评审）跳过
         if need_adjust:
+            if task_id:
+                task_manager.update_step_status(task_id, 3, StepStatus.PENDING)
+                task_manager.update_step_status(task_id, 4, StepStatus.SKIPPED, error="字数偏差过大，异步调整中")
             return {
                 "success": True,
                 "message": f"{chapter_title}初稿已保存，正在异步调整字数...",
@@ -2788,11 +2817,17 @@ class NovelEngine:
                 "deviation": deviation,
                 "content": initial_content
             }
+        else:
+            # 不需要调整，标记步骤3（调整字数）为跳过
+            if task_id:
+                task_manager.update_step_status(task_id, 3, StepStatus.SKIPPED)
 
         # 6. 更新状态
         self.sm.update_chapter_status(book, chapter_num, "draft", retry_count=0)
 
         # 7. 质量审查
+        if task_id:
+            task_manager.update_step_status(task_id, 4, StepStatus.RUNNING)
         audit_result = self._audit_chapter(book, chapter_num, content, truth_files, previous_audit_report)
 
         # 8. 检查触发修订的条件
@@ -2831,15 +2866,30 @@ class NovelEngine:
                 audit_passed=False,
                 retry_count=1
             )
-            return {
-                "success": False,
-                "message": f"{chapter_title}触发修订：{revision_msg}",
-                "audit_result": audit_result.to_dict(),
-                "content": content,
-                "outline": outline,
-                "need_revision": True,
-                "revision_reasons": revision_reasons
-            }
+            if need_revision:
+                # 质量评审失败，标记步骤失败
+                if task_id:
+                    task_manager.update_step_status(task_id, 4, StepStatus.FAILED, error=revision_msg)
+                revision_msg = "；".join(revision_reasons)
+                self.sm.update_chapter_status(
+                    book, chapter_num, "draft",
+                    audit_score=audit_result.chapter_score,
+                    audit_passed=False,
+                    retry_count=1
+                )
+                return {
+                    "success": False,
+                    "message": f"{chapter_title}触发修订：{revision_msg}",
+                    "audit_result": audit_result.to_dict(),
+                    "content": content,
+                    "outline": outline,
+                    "need_revision": True,
+                    "revision_reasons": revision_reasons
+                }
+
+        # 评审通过，标记步骤完成
+        if task_id:
+            task_manager.update_step_status(task_id, 4, StepStatus.SUCCESS)
 
         # 9. 保存评审报告
         audit_report_path = ""
@@ -3081,7 +3131,7 @@ class NovelEngine:
         def _do_adjust():
             try:
                 print(f"\n[adjust_chapter_word_count_async] 开始异步调整第{chapter_num}章字数...")
-                book = self.sm.get_book(book_id)
+                book = self.sm.get_book_by_id(book_id)
                 if not book:
                     print(f"[adjust_chapter_word_count_async] 书籍不存在: {book_id}")
                     if task_id:
@@ -3956,29 +4006,7 @@ class NovelEngine:
 
         # 替换 system_prompt 中的 {words_per_chapter} 占位符
         system_prompt = self.llm.get_system_prompt("architect").replace("{words_per_chapter}", str(target_words))
-        result = self.llm.generate(prompt, system_prompt)
-        if result and not result.startswith("["):
-            return result
-
-        return f"""# {chapter_title} 章节结构
-
-## 本章核心事件
-[一句话概括]
-
-## 起承转合
-- 起: [开场]
-- 承: [发展]
-- 转: [转折]
-- 合: [结尾]
-
-## 情节点
-1. [情节点1]
-2. [情节点2]
-3. [情节点3]
-
-## 预估字数
-约 {target_words} 字
-"""
+        return self.llm.generate(prompt, system_prompt)
 
     def _generate_full_outline(self, book: BookInfo, planning: Dict, story_bible: str,
                                 author_intent: str, characters: str) -> str:
@@ -3996,13 +4024,16 @@ class NovelEngine:
 
         Returns:
             完整章节大纲
+
+        Raises:
+            LLMError: LLM调用失败时抛出
         """
         genre = planning.get('genre', book.genre or '都市')
         summary = planning.get('梗概', '')
         estimated_chapters = planning.get('estimated_chapters', 80)
         style = planning.get('风格', '轻松幽默')
 
-        prompt = f"""请为小说《{book.name}》生成完整的章节大纲。
+        prompt = f"""请为小说《{book.name}》生成完整、细致的章节大纲，覆盖全部 {estimated_chapters} 章。
 
 ## 基本信息
 - 题材：{genre}
@@ -4014,72 +4045,45 @@ class NovelEngine:
 {summary}
 
 ## 作者意图
-{author_intent[:1000] if author_intent else '无'}
+{author_intent[:1500] if author_intent else '无'}
 
 ## 世界观设定
-{story_bible[:1500] if story_bible else '无'}
+{story_bible[:2000] if story_bible else '无'}
 
 ## 人物设定
-{characters[:1000] if characters else '无'}
+{characters[:1500] if characters else '无'}
 
-请生成完整的章节大纲，要求：
+请生成完整章节大纲，要求：
 
-1. **整体结构**：将 {estimated_chapters} 章分为几个阶段（如：开局期、成长期、高潮期、结局期）
-2. **每阶段规划**：说明该阶段的主要任务、预期章节数
-3. **关键节点**：标注重要情节点（如：第一个高潮、转折点、最终决战等）
-4. **章节预览**：列出前20章的简要内容（每章一句话）
+1. **整体结构**：将 {estimated_chapters} 章分为4个阶段（开局期1-20章、成长期21-40章、高潮期41-60章、结局期61-{estimated_chapters}章）
+2. **每章必须有**：章节标题、核心事件（1-2句话）、关键人物、场景、伏笔埋设/回收
+3. **格式要求**：每个阶段用 ## 标记，每章用 ### 标记，结构一致
+4. **不得使用占位符**：每一章都要有具体内容，禁止使用"待定"、"未知"、"[某某]"等占位符
+5. **剧情连贯**：章节之间要有因果联系，前后呼应
 
-大纲格式：
-- 使用 Markdown
-- 分层清晰
-- 每个阶段用 ## 标记
-- 章节用 - 或 * 列表
+输出格式示例：
+```
+## 第一阶段：开局期（第1-20章）
 
-请生成详细且实用的章节大纲："""
+### 第1章 [章节主题]
+**核心事件**：...
+**关键人物**：...
+**场景**：...
+**伏笔**：...
+**章节简介**：...
+
+### 第2章 [章节主题]
+...
+```
+
+请生成全部 {estimated_chapters} 章的详细大纲："""
 
         # 替换 system_prompt 中的 {words_per_chapter} 占位符
         target_words = book.words_per_chapter or 3000
         system_prompt = self.llm.get_system_prompt("architect").replace("{words_per_chapter}", str(target_words))
         result = self.llm.generate(prompt, system_prompt)
 
-        if result and not result.startswith("["):
-            return f"# {book.name} - 章节大纲\n\n*本文档定义了整本书的章节规划，应在章节创作时参考。*\n\n{result}"
-
-        # 回退模板
-        chapters = planning.get('estimated_chapters', 80)
-        stage_size = chapters // 4
-        return f"""# {book.name} - 章节大纲
-
-*本文档定义了整本书的章节规划，应在章节创作时参考。*
-
-## 整体结构
-
-| 阶段 | 章节范围 | 主要任务 |
-|------|----------|----------|
-| 开局期 | 1-{stage_size}章 | 建立世界观、主角、初始冲突 |
-| 成长期 | {stage_size+1}-{stage_size*2}章 | 主角升级、势力扩展 |
-| 高潮期 | {stage_size*2+1}-{stage_size*3}章 | 主线冲突升级、最终对抗 |
-| 结局期 | {stage_size*3+1}-{chapters}章 | 收束伏笔、完美结局 |
-
-## 开局期（前{stage_size}章）
-
-- **第1章**：主角出场，展示初始状态，设置悬念钩子
-- **第2章**：主角获得机遇/觉醒，展示能力雏形
-- **第3章**：小试牛刀，建立第一个明确对手/目标
-- ...
-
-## 关键节点
-
-- 第10章左右：第一个高潮
-- 第{stage_size}章：开局期收尾，主线任务确立
-- 第{chapters-20}章左右：最终决战准备
-- 第{chapters}章：大结局
-
----
-
-*版本：1.0*
-*生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}*
-"""
+        return f"# {book.name} - 章节大纲\n\n*本文档定义了整本书的章节规划，应在章节创作时参考。*\n\n{result}"
 
     def _compile_context(self, book: BookInfo, chapter_num: int, outline: str, truth_files: Dict) -> str:
         """编译上下文（含上一章 Reflector 策略调整）"""
@@ -4424,26 +4428,30 @@ class NovelEngine:
         for attempt in range(1, max_attempts + 1):
             # 生成/修订细纲
             print(f"\n[OutlineAudit] --- 尝试 {attempt}/{max_attempts} ---")
-            if attempt == 1:
-                print(f"[OutlineAudit] 正在生成细纲...")
-                outline = self._generate_chapter_outline(
-                    book, chapter_num,
-                    regenerate=revise,
-                    previous_audit=previous_audit,
-                    previous_outline=previous_outline
-                )
-            else:
-                # 修订模式：带上一次审计报告
-                print(f"[OutlineAudit] 正在修订细纲（依据上次审计报告）...")
-                outline = self._generate_chapter_outline(
-                    book, chapter_num,
-                    regenerate=True,
-                    previous_audit=best_report,
-                    previous_outline=best_outline or ""
-                )
+            try:
+                if attempt == 1:
+                    print(f"[OutlineAudit] 正在生成细纲...")
+                    outline = self._generate_chapter_outline(
+                        book, chapter_num,
+                        regenerate=revise,
+                        previous_audit=previous_audit,
+                        previous_outline=previous_outline
+                    )
+                else:
+                    # 修订模式：带上一次审计报告
+                    print(f"[OutlineAudit] 正在修订细纲（依据上次审计报告）...")
+                    outline = self._generate_chapter_outline(
+                        book, chapter_num,
+                        regenerate=True,
+                        previous_audit=best_report,
+                        previous_outline=best_outline or ""
+                    )
+            except LLMError as e:
+                print(f"[OutlineAudit] ✗ 细纲生成失败 (LLM错误): {e}")
+                raise
 
             if not outline or outline.startswith("["):
-                print(f"[OutlineAudit] ✗ 细纲生成失败 (尝试 {attempt}/{max_attempts})")
+                print(f"[OutlineAudit] ✗ 细纲生成失败 (响应无效, 尝试 {attempt}/{max_attempts})")
                 continue
 
             # 计算细纲字数
@@ -4499,7 +4507,11 @@ class NovelEngine:
         if best_outline is None:
             # 兜底：直接生成一个不审计的
             print(f"[OutlineAudit]   兜底：跳过审计直接生成细纲")
-            best_outline = self._generate_chapter_outline(book, chapter_num)
+            try:
+                best_outline = self._generate_chapter_outline(book, chapter_num)
+            except LLMError as e:
+                print(f"[OutlineAudit]   兜底生成也失败: {e}")
+                raise
         print(f"[OutlineAudit]   使用该版本继续正文创作")
         print(f"{'='*60}\n")
         return best_outline
