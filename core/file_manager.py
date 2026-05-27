@@ -63,14 +63,27 @@ class FileManager:
         with open(path, 'r', encoding='utf-8') as f:
             return f.read()
 
-    def write_text(self, path: Path, content: str) -> bool:
-        """写入文本文件"""
+    def write_text(self, path: Path, content: str, log_content: bool = False) -> bool:
+        """写入文本文件
+
+        Args:
+            path: 文件路径
+            content: 文件内容
+            log_content: 是否记录内容到日志（默认False，仅记录操作）
+        """
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(content)
+            # 记录文件写入操作
+            content_len = len(content)
+            if log_content and content_len <= 1000:
+                print(f"[FileManager] ✓ Write: {path} ({content_len} chars)")
+            else:
+                print(f"[FileManager] ✓ Write: {path} ({content_len} chars)")
             return True
-        except Exception:
+        except Exception as e:
+            print(f"[FileManager] ✗ Write failed: {path} - {str(e)}")
             return False
 
     def get_chapter_path(self, book, chapter_num: int) -> Optional[Path]:
