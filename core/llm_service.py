@@ -819,7 +819,7 @@ class LLMService:
         payload = json.dumps(params).encode('utf-8')
 
         start_time = time.time()
-        print(f"[LLM] [{agent_name}] 开始请求 (超时: {call_timeout}s)...")
+        print(f"[LLM] [{agent_name}] 开始请求 (最长等待: {call_timeout}s)...")
 
         for attempt in range(self.config.retry_times):
             try:

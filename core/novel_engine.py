@@ -2831,28 +2831,27 @@ class NovelEngine:
         deviation_percent = abs(deviation) / target_words * 100 if target_words > 0 else 0
         need_adjust = deviation_percent > 15 or abs(deviation) > 500
 
-        # 如果需要调整，步骤3（调整字数）标记为PENDING，步骤4（质量评审）跳过
-        if need_adjust:
-            if task_id:
-                task_manager.update_step_status(task_id, 3, StepStatus.PENDING)
-                task_manager.update_step_status(task_id, 4, StepStatus.SKIPPED, error="字数偏差过大，异步调整中")
-            return {
-                "success": True,
-                "message": f"{chapter_title}初稿已保存，正在异步调整字数...",
-                "chapter_num": chapter_num,
-                "pending_adjust": True,
-                "initial_words": current_words,
-                "target_words": target_words,
-                "deviation": deviation,
-                "content": initial_content
-            }
-        else:
-            # 不需要调整，标记步骤3（调整字数）为跳过
-            if task_id:
-                task_manager.update_step_status(task_id, 3, StepStatus.SKIPPED)
-
         # 6. 更新状态
         self.sm.update_chapter_status(book, chapter_num, "draft", retry_count=0)
+
+        # 5.5 如果需要字数调整，先同步调整（评审前调整，保证评审基于调整后的字数）
+        if need_adjust:
+            if task_id:
+                task_manager.update_step_status(task_id, 3, StepStatus.RUNNING)
+            print(f"[字数调整] 章节{chapter_num}需要调整字数，先同步调整...")
+            adjusted_content = self._adjust_chapter_word_count(book, chapter_num, content)
+            if adjusted_content and adjusted_content != content:
+                content = adjusted_content
+                initial_content = self._filter_llm_output(content)
+                self.sm.fm.write_text(chapter_path, initial_content)
+                print(f"[字数调整] 章节{chapter_num}字数调整完成")
+            if task_id:
+                task_manager.update_step_status(task_id, 3, StepStatus.SUCCESS)
+            # 调整后重新计算字数
+            clean_content = self._clean_content(content)
+            current_words = len(clean_content)
+            deviation = current_words - target_words
+            deviation_percent = abs(deviation) / target_words * 100 if target_words > 0 else 0
 
         # 7. 质量审查
         if task_id:
@@ -2902,6 +2901,15 @@ class NovelEngine:
                 print(f"[write_chapter] 评分{audit_result.chapter_score}低于75分，自动修订...")
                 revise_result = self.write_chapter(chapter_num, revise=True, regenerate=False,
                                                   task_id=task_id, auto_review=False, auto_revise=False)
+                # 修订后重新获取内容（修订可能已改变内容）
+                chapter_info = self.get_chapter_content(book.id, chapter_num)
+                content = chapter_info.get('chapter', {}).get('content', '') if chapter_info.get('success') else content
+                # 修订后重新计算字数
+                clean_content = self._clean_content(content)
+                current_words = len(clean_content)
+                deviation = current_words - target_words
+                deviation_percent = abs(deviation) / target_words * 100 if target_words > 0 else 0
+                need_adjust = deviation_percent > 15 or abs(deviation) > 500
                 return revise_result
             return {
                 "success": False,
@@ -2913,9 +2921,24 @@ class NovelEngine:
                 "revision_reasons": revision_reasons
             }
 
+        # 评审通过，检查是否需要字数调整
+        if need_adjust:
+            if task_id:
+                task_manager.update_step_status(task_id, 3, StepStatus.PENDING)
+                task_manager.update_step_status(task_id, 4, StepStatus.SUCCESS)
+            return {
+                "success": True,
+                "message": f"{chapter_title}初稿已保存，正在异步调整字数...",
+                "chapter_num": chapter_num,
+                "pending_adjust": True,
+                "initial_words": current_words,
+                "target_words": target_words,
+                "deviation": deviation,
+                "content": content,
+                "audit_score": audit_result.chapter_score,
+                "audit_passed": True
+            }
         # 评审通过，标记步骤完成
-        if task_id:
-            task_manager.update_step_status(task_id, 4, StepStatus.SUCCESS)
 
         # 9. 保存评审报告
         audit_report_path = ""
