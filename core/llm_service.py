@@ -134,10 +134,10 @@ class LLMClient:
         if json_mode:
             params["response_format"] = {"type": "json_object"}
 
-        # MiniMax max_tokens 上限为 2048，需要限制
-        if "minimaxi" in self.config.base_url.lower() and params.get("max_tokens", 2048) > 2048:
-            params["max_tokens"] = 2048
-            print(f"[LLM] MiniMax max_tokens 已限制为 2048")
+        # MiniMax max_tokens 上限为 204800（使用 /v1/messages Anthropic 兼容端点）
+        if "minimaxi" in self.config.base_url.lower() and params.get("max_tokens", 204800) > 204800:
+            params["max_tokens"] = 204800
+            print(f"[LLM] MiniMax max_tokens 已限制为 204800")
 
         payload = json.dumps(params).encode('utf-8')
 
@@ -811,10 +811,10 @@ class LLMService:
         if json_mode:
             params["response_format"] = {"type": "json_object"}
 
-        # MiniMax max_tokens 上限为 2048，需要限制
-        if "minimaxi" in self.config.base_url.lower() and params.get("max_tokens", 2048) > 2048:
-            params["max_tokens"] = 2048
-            print(f"[LLM] MiniMax max_tokens 已限制为 2048")
+        # MiniMax max_tokens 上限为 204800（使用 /v1/messages Anthropic 兼容端点）
+        if "minimaxi" in self.config.base_url.lower() and params.get("max_tokens", 204800) > 204800:
+            params["max_tokens"] = 204800
+            print(f"[LLM] MiniMax max_tokens 已限制为 204800")
 
         payload = json.dumps(params).encode('utf-8')
 
