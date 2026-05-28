@@ -4018,14 +4018,17 @@ class NovelEngine:
                 revise_hint = """
 
 【修订要求】：请重新审视上一次的章节结构，生成一个更好的版本。注意避免重复的情节和角色行为。"""
-        
+
         target_words = book.words_per_chapter or 3000
+        # 根据字数计算关键情节点数量（系统直接计算，传给LLM）
+        plot_point_count = min(6, max(2, target_words // 1000))
+        plot_point_words = target_words // 4
 
         prompt = f"""请为小说《{book.name}》{chapter_title}生成章节细纲。
 
 【创作要求】
 - 目标字数：约 {target_words} 字（正文应控制在 {target_words}~{target_words + 500} 字之间）
-- 请根据目标字数合理规划情节密度，确保情节量与字数匹配
+- 关键情节点数量：{plot_point_count}个（每个约 {plot_point_words} 字）
 {revise_hint}
 当前世界状态：
 {truth_files.get('current_state', '无')}
@@ -4036,16 +4039,10 @@ class NovelEngine:
 请生成包含以下部分的章节结构：
 1. 本章核心事件（一句话概括）
 2. 起承转合结构
-3. 关键情节点（根据目标字数动态调整：约{target_words // 1000}-{target_words // 700}个，每个情节点应匹配约 {target_words // 4} 字的篇幅）
+3. 关键情节点（{plot_point_count}个，每个情节点约 {plot_point_words} 字）
 4. 伏笔埋设
 5. 本章结尾钩子
 6. 预估字数（目标 {target_words} 字，合理范围 {target_words - 200}~{target_words + 500} 字）
-
-**字数与情节点数量参考**：
-- 2000-3000字：2-3个关键情节点
-- 3000-4000字：3-4个关键情节点
-- 4000-6000字：4-5个关键情节点
-- 6000字以上：5-6个关键情节点
 
 使用Markdown格式输出。"""
 
