@@ -134,8 +134,11 @@ class LLMClient:
         if json_mode:
             params["response_format"] = {"type": "json_object"}
 
-        # MiniMax max_tokens 上限为 204800（使用 /v1/messages Anthropic 兼容端点）
-        if "minimaxi" in self.config.base_url.lower() and params.get("max_tokens", 204800) > 204800:
+        # MiniMax Anthropic 兼容端点检测
+        is_minimax_anthropic = "minimaxi" in self.config.base_url.lower() and "/anthropic" in self.config.base_url.lower()
+
+        # MiniMax max_tokens 上限为 204800
+        if is_minimax_anthropic and params.get("max_tokens", 204800) > 204800:
             params["max_tokens"] = 204800
             print(f"[LLM] MiniMax max_tokens 已限制为 204800")
 
@@ -143,13 +146,25 @@ class LLMClient:
 
         for attempt in range(self.config.retry_times):
             try:
-                req = urllib.request.Request(
-                    f"{self.config.base_url}/chat/completions",
-                    data=payload,
-                    headers={
+                # 根据 endpoint 类型选择 URL 和 headers
+                if is_minimax_anthropic:
+                    req_url = f"{self.config.base_url}/v1/messages"
+                    headers = {
+                        "X-Api-Key": self.config.api_key,
+                        "Content-Type": "application/json",
+                        "anthropic-version": "2023-06-01"
+                    }
+                else:
+                    req_url = f"{self.config.base_url}/chat/completions"
+                    headers = {
                         "Authorization": f"Bearer {self.config.api_key}",
                         "Content-Type": "application/json"
-                    },
+                    }
+
+                req = urllib.request.Request(
+                    req_url,
+                    data=payload,
+                    headers=headers,
                     method="POST"
                 )
 
@@ -811,8 +826,11 @@ class LLMService:
         if json_mode:
             params["response_format"] = {"type": "json_object"}
 
-        # MiniMax max_tokens 上限为 204800（使用 /v1/messages Anthropic 兼容端点）
-        if "minimaxi" in self.config.base_url.lower() and params.get("max_tokens", 204800) > 204800:
+        # MiniMax Anthropic 兼容端点检测
+        is_minimax_anthropic = "minimaxi" in self.config.base_url.lower() and "/anthropic" in self.config.base_url.lower()
+
+        # MiniMax max_tokens 上限为 204800
+        if is_minimax_anthropic and params.get("max_tokens", 204800) > 204800:
             params["max_tokens"] = 204800
             print(f"[LLM] MiniMax max_tokens 已限制为 204800")
 
@@ -823,16 +841,26 @@ class LLMService:
 
         for attempt in range(self.config.retry_times):
             try:
-                req_url = f"{self.config.base_url}/chat/completions"
+                # 根据 endpoint 类型选择 URL 和 headers
+                if is_minimax_anthropic:
+                    req_url = f"{self.config.base_url}/v1/messages"
+                    headers = {
+                        "X-Api-Key": self.config.api_key,
+                        "Content-Type": "application/json",
+                        "anthropic-version": "2023-06-01"
+                    }
+                else:
+                    req_url = f"{self.config.base_url}/chat/completions"
+                    headers = {
+                        "Authorization": f"Bearer {self.config.api_key}",
+                        "Content-Type": "application/json"
+                    }
                 print(f"[LLM] [{agent_name}] 请求URL: POST {req_url}")
 
                 req = urllib.request.Request(
                     req_url,
                     data=payload,
-                    headers={
-                        "Authorization": f"Bearer {self.config.api_key}",
-                        "Content-Type": "application/json"
-                    },
+                    headers=headers,
                     method="POST"
                 )
 
@@ -947,6 +975,9 @@ class LLMService:
 
         payload = json.dumps(params).encode('utf-8')
 
+        # MiniMax Anthropic 兼容端点检测
+        is_minimax_anthropic = "minimaxi" in self.config.base_url.lower() and "/anthropic" in self.config.base_url.lower()
+
         start_time = time.time()
         full_content = []
 
@@ -954,13 +985,25 @@ class LLMService:
 
         for attempt in range(self.config.retry_times):
             try:
-                req = urllib.request.Request(
-                    f"{self.config.base_url}/chat/completions",
-                    data=payload,
-                    headers={
+                # 根据 endpoint 类型选择 URL 和 headers
+                if is_minimax_anthropic:
+                    req_url = f"{self.config.base_url}/v1/messages"
+                    headers = {
+                        "X-Api-Key": self.config.api_key,
+                        "Content-Type": "application/json",
+                        "anthropic-version": "2023-06-01"
+                    }
+                else:
+                    req_url = f"{self.config.base_url}/chat/completions"
+                    headers = {
                         "Authorization": f"Bearer {self.config.api_key}",
                         "Content-Type": "application/json"
-                    },
+                    }
+
+                req = urllib.request.Request(
+                    req_url,
+                    data=payload,
+                    headers=headers,
                     method="POST"
                 )
 
