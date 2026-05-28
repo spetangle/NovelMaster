@@ -2836,17 +2836,14 @@ class NovelEngine:
 
         # 5.5 如果需要字数调整，先同步调整（评审前调整，保证评审基于调整后的字数）
         if need_adjust:
-            if task_id:
-                task_manager.update_step_status(task_id, 3, StepStatus.RUNNING)
             print(f"[字数调整] 章节{chapter_num}需要调整字数，先同步调整...")
             adjusted_content = self._adjust_chapter_word_count(book, chapter_num, content)
+            print(f"[字数调整] _adjust_chapter_word_count返回: {len(adjusted_content) if adjusted_content else 0}字符")
             if adjusted_content and adjusted_content != content:
                 content = adjusted_content
                 initial_content = self._filter_llm_output(content)
                 self.sm.fm.write_text(chapter_path, initial_content)
-                print(f"[字数调整] 章节{chapter_num}字数调整完成")
-            if task_id:
-                task_manager.update_step_status(task_id, 3, StepStatus.SUCCESS)
+                print(f"[字数调整] 章节{chapter_num}字数调整完成，内容已保存")
             # 调整后重新计算字数
             clean_content = self._clean_content(content)
             current_words = len(clean_content)
@@ -3160,7 +3157,8 @@ class NovelEngine:
                 
                 print(f"[_adjust_chapter_word_count] 调用 {agent_name} Agent 进行章节{action}...")
                 result = self.agent_engine.call_agent(agent_name, context)
-                
+                print(f"[_adjust_chapter_word_count] Agent返回: success={result.success}, content长度={len(result.content) if result.content else 0}")
+
                 if result.success and result.content:
                     adjusted_content = self._filter_llm_output(result.content)
 
