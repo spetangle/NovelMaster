@@ -66,8 +66,10 @@ class AgentEngine:
         Returns:
             AgentResult: 执行结果
         """
+        print(f"[Agent] {role_name} 开始执行...")
         agent = self.agents.get(role_name)
         if not agent:
+            print(f"[Agent] {role_name} 未找到")
             return AgentResult(
                 success=False,
                 error=f"未找到 Agent 角色: {role_name}",
@@ -77,7 +79,19 @@ class AgentEngine:
         if not self.llm:
             agent.set_llm(self.llm)
 
-        return agent.execute(context)
+        try:
+            result = agent.execute(context)
+            print(f"[Agent] {role_name} 执行完成: success={result.success}, content长度={len(result.content) if result.content else 0}, data={bool(result.data)}")
+            return result
+        except Exception as e:
+            print(f"[Agent] {role_name} 执行异常: {e}")
+            import traceback
+            traceback.print_exc()
+            return AgentResult(
+                success=False,
+                error=f"执行异常: {str(e)}",
+                agent_name=role_name
+            )
 
     def get_agent(self, role_name: str) -> Optional[UniversalAgent]:
         """获取指定 Agent"""

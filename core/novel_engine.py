@@ -283,6 +283,17 @@ class NovelEngine:
                 temp_name = name_match.group(1).strip().replace('**', '')
             book_name = temp_name if temp_name else book_id
 
+            # 检查书名是否有效（如果等于 book_id 说明没有从简报中提取到书名）
+            if book_name == book_id:
+                # 书名无效，需要用户输入
+                return {
+                    "success": False,
+                    "phase": "need_book_name",
+                    "book_id": book_id,
+                    "message": "请输入书名",
+                    "suggestion": "请在创作简报中包含书名，或使用\"书名：xxx\"格式"
+                }
+
             # 2. 创建书籍记录和文件夹
             report("创建书籍", 10, f"正在创建书籍《{book_name}》，ID: {book_id}...")
             book = self.sm.get_book_by_id(book_id)
@@ -376,6 +387,8 @@ class NovelEngine:
 
             # 6. 保存初始文件
             report("保存文件", 70, "正在保存设定文件...")
+            # 保存原始创意/简报信息到文件
+            self.sm.fm.write_text(book_path / "original_brief.md", brief)
             self.sm.fm.write_text(book_path / "story_bible.md", story_bible)
             self.sm.fm.write_text(book_path / "book_rules.md", book_rules)
             # 清除摘要缓存，新创建的文件需要重新生成摘要
@@ -440,10 +453,11 @@ class NovelEngine:
                  "score": s.get("score", 0), "issues": s.get("issues", "")}
                 for s in book_rules_candidates
             ]
-            
+
             return {
                 "success": True,
                 "phase": "created",
+                "book_name": book.name,
                 "book": {
                     "id": book.id,
                     "name": book.name,
@@ -1192,7 +1206,11 @@ class NovelEngine:
                 print(f"[init_inspiration_book] create_book失败: {msg}")
                 return {"success": False, "message": msg}
             print(f"[init_inspiration_book] 保存完成，dialogue长度={len(book.inspiration_dialogue)}")
-            
+
+            # 保存原始创意信息到文件
+            book_path = self.workspace / book.path
+            self.sm.fm.write_text(book_path / "original_brief.md", initial_idea)
+
             return {
                 "success": True,
                 "book_id": book_id,
@@ -2937,18 +2955,44 @@ class NovelEngine:
 
     def _update_truth_for_chapter(self, book: BookInfo, chapter_num: int, content: str, outline: str = ""):
         """更新当前章节的真相文件（含 Observer → Reflector 链路）"""
-        print(f"\n[_update_truth_for_chapter] 开始处理第{chapter_num}章...")
+        print(f"\n[真相文件更新] 开始处理第{chapter_num}章...")
         try:
             from agents.engine import AgentEngine
-            from core.llm_service import LLMManager
+            from core.llm_service import LLMManager, LLMClient, ProviderConfig, MultiProviderLLMConfig
 
-            llm_manager = LLMManager(str(self.workspace / ".env"))
+            # 确定 .env 路径：优先使用 workspace/.env，否则使用项目根目录的 .env
+            workspace_env = self.workspace / ".env"
+            config_path = str(workspace_env) if workspace_env.exists() else ".env"
+
+            llm_manager = LLMManager(config_path)
+
+            # 确保 LLMManager 使用 MultiProviderLLMConfig
+            if not isinstance(llm_manager.config, MultiProviderLLMConfig):
+                llm_manager.config = MultiProviderLLMConfig.from_env_json(config_path)
+
+            # 获取当前激活的提供商并创建正确的 LLMClient
+            provider = llm_manager.config.get_active_provider()
+            if provider:
+                provider_config = ProviderConfig(
+                    api_key=provider.api_key,
+                    base_url=provider.base_url,
+                    model=provider.model,
+                    max_tokens=provider.max_tokens,
+                    temperature=provider.temperature,
+                    timeout=provider.timeout,
+                    retry_times=provider.retry_times,
+                    retry_delay=provider.retry_delay
+                )
+                llm_manager.client = LLMClient(provider_config)
+
             agent_engine = AgentEngine(llm_manager)
 
             # 加载现有真相文件
             truth_files = self._load_truth_files(book)
+            print(f"[真相文件更新] 已加载 {len(truth_files)} 个真相文件")
 
             # Step A: 调用 observer Agent 提取事实
+            print(f"[真相文件更新] 调用 observer Agent 提取第{chapter_num}章事实...")
             observer_context = {
                 "book": book.to_dict(),
                 "chapter_num": chapter_num,
@@ -2956,20 +3000,22 @@ class NovelEngine:
                 "truth_files": truth_files
             }
             observer_result = agent_engine.call_agent("observer", observer_context)
+            print(f"[真相文件更新] observer 执行完成: success={observer_result.success}")
 
             # observer 可能是 JSON 或 text 格式，处理不同情况
             if observer_result.success:
                 if observer_result.data:
                     # JSON 格式结果
                     facts = observer_result.data
+                    print(f"[真相文件更新] 提取到 {len(facts) if isinstance(facts, dict) else '?'} 条事实，更新真相文件...")
                     self._apply_facts_to_truth_files(book, chapter_num, facts)
+                    print(f"[真相文件更新] 真相文件已更新")
                 elif observer_result.content:
                     # text 格式结果，记录但不丢失
-                    print(f"[Observer] 第{chapter_num}章事实提取完成 (text format, {len(observer_result.content)} chars)")
+                    print(f"[真相文件更新] observer 返回 text 格式 ({len(observer_result.content)} 字符)")
 
             # Step B: 调用 reflector Agent 进行反思与策略调整
-
-            # Step B: 调用 reflector Agent 进行反思与策略调整
+            print(f"[真相文件更新] 调用 reflector Agent 进行反思...")
             try:
                 reflector_context = {
                     "book": book.to_dict(),
@@ -2980,17 +3026,24 @@ class NovelEngine:
                     "observer_result": observer_result.data if (observer_result.success and observer_result.data) else (observer_result.content if observer_result.success else "")
                 }
                 reflector_result = agent_engine.call_agent("reflector", reflector_context)
+                print(f"[真相文件更新] reflector 执行完成: success={reflector_result.success}")
 
                 if reflector_result.success and reflector_result.content:
                     # 保存反思报告到文件
                     reflection_path = self.workspace / book.path / "chapters" / f"reflection_{chapter_num}.md"
                     reflection_content = self._filter_llm_output(reflector_result.content)
                     self.sm.fm.write_text(reflection_path, reflection_content)
-                    print(f"[Reflector] 第{chapter_num}章反思报告已保存: {reflection_path}")
+                    print(f"[真相文件更新] 反思报告已保存: {reflection_path}")
+                else:
+                    print(f"[真相文件更新] reflector 无有效内容")
             except Exception as e:
-                print(f"[Reflector] 反思失败: {e}")
+                print(f"[真相文件更新] reflector 执行异常: {e}")
+
+            print(f"[真相文件更新] 第{chapter_num}章处理完成")
         except Exception as e:
-            print(f"提取章节事实失败: {e}")
+            print(f"[真相文件更新] 异常: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _apply_facts_to_truth_files(self, book: BookInfo, chapter_num: int, facts: dict):
         """将提取的事实应用到真相文件"""
@@ -5103,35 +5156,40 @@ class NovelEngine:
 
     def check_continuity(self, book: BookInfo, chapter_num: int) -> Dict[str, Any]:
         """每5章触发连贯性检查（长线/纵向检查）"""
+        print(f"\n[连续性检查] 开始检查第{chapter_num}章...")
         try:
             # 加载当前章节及之前的章节内容（前5章）
             chapters_content = []
             book_dir = self.workspace / book.path / "chapters"
-            
+
             for i in range(max(1, chapter_num - 4), chapter_num + 1):
                 chapter_path = book_dir / f"chapter_{i}.md"
                 if chapter_path.exists():
                     content = chapter_path.read_text(encoding='utf-8')
                     chapters_content.append({"chapter": i, "content": content[:3000]})  # 限制字数
-            
+
             if len(chapters_content) < 2:
+                print(f"[连续性检查] 章节数量不足，无法检查")
                 return {
                     "success": False,
                     "message": "章节数量不足，无法进行连贯性检查",
                     "overall_score": 0
                 }
-            
+
+            print(f"[连续性检查] 已加载 {len(chapters_content)} 章内容")
+
             # 加载真相文件
             truth_files = self._load_truth_files(book)
-            
+
             # 组合章节内容
             combined_content = "\n\n".join([
                 f"【第{c['chapter']}章】\n{c['content']}"
                 for c in chapters_content
             ])
-            
+
             # 调用 continuity_auditor 进行连贯性检查
             if self.agent_engine:
+                print(f"[连续性检查] 调用 continuity_auditor Agent...")
                 context = {
                     "book": book.to_dict(),
                     "chapter_num": chapter_num,
@@ -5139,22 +5197,27 @@ class NovelEngine:
                     "truth_files": truth_files,
                     "extra": {"audit_type": "continuity", "check_range": f"第{max(1, chapter_num-4)}-{chapter_num}章"}
                 }
-                
+
                 result = self.agent_engine.call_agent("continuity_auditor", context)
-                
+
                 if result.success and result.data:
                     data = result.data
+                    score = data.get("overall_score", 0) or data.get("consistency_scores", {}).get("overall", 0)
+                    print(f"[连续性检查] 完成，综合评分: {score}")
                     return {
                         "success": True,
                         "chapter_range": f"{max(1, chapter_num-4)}-{chapter_num}",
-                        "overall_score": data.get("overall_score", 0) or data.get("consistency_scores", {}).get("overall", 0),
+                        "overall_score": score,
                         "contradiction_list": data.get("contradiction_list", []),
                         "consistency_scores": data.get("consistency_scores", {}),
                         "recommendations": data.get("recommendations", []),
                         "details": data
                     }
-            
+                else:
+                    print(f"[连续性检查] Agent调用失败或无返回")
+
             # 如果没有 agent_engine，使用简化检查
+            print(f"[连续性检查] 完成（简化模式），评分: 85")
             return {
                 "success": True,
                 "chapter_range": f"{max(1, chapter_num-4)}-{chapter_num}",
@@ -5163,10 +5226,11 @@ class NovelEngine:
                 "contradiction_list": [],
                 "recommendations": []
             }
-            
+
         except Exception as e:
             import traceback
             traceback.print_exc()
+            print(f"[连续性检查] 异常: {str(e)}")
             return {
                 "success": False,
                 "message": f"连贯性检查失败: {str(e)}",

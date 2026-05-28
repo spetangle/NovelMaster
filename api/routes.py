@@ -160,6 +160,10 @@ async def create_book(data: CreateBookRequest):
                 if result.get('success'):
                     task_manager.update_task(task.id, status=TaskStatus.SUCCESS,
                         progress=100, message="创建完成", result=result)
+                elif result.get('phase') == 'need_book_name':
+                    # 书名无效，需要用户输入书名
+                    task_manager.update_task(task.id, status=TaskStatus.FAILED,
+                        message=f"书名未设置: {result.get('message', '')}")
                 else:
                     task_manager.update_task(task.id, status=TaskStatus.FAILED,
                         message=f"创建失败: {result.get('message', '')}")
@@ -170,7 +174,24 @@ async def create_book(data: CreateBookRequest):
 
         import threading
         threading.Thread(target=run, daemon=True).start()
-        
+
+        # 先检查书名是否有效（同步检查）
+        temp_name_check = ""
+        name_match_check = re.search(r'\*?书名\*?[：:]\s*([^\n]+)', data.brief)
+        if name_match_check:
+            temp_name_check = name_match_check.group(1).strip().replace('**', '')
+        if not temp_name_check:
+            # 书名无效，返回 need_book_name 阶段，让前端弹窗让用户输入
+            return {
+                "success": True,
+                "task_id": task.id,
+                "book_id": book_id,
+                "book_name": "新书",
+                "mode": "auto",
+                "phase": "need_book_name",
+                "message": "请输入书名"
+            }
+
         return {
             "success": True,
             "task_id": task.id,
@@ -429,7 +450,16 @@ async def generate_inspiration_docs(book_id: str):
     book = engine.sm.get_book_by_id(book_id)
     if not book:
         raise HTTPException(status_code=404, detail="书籍不存在")
-    
+
+    collected = getattr(book, 'inspiration_collected_info', {})
+    book_name = collected.get('book_name', '').strip()
+
+    # 检查书名是否已确认（不能是空值或占位符）
+    name_placeholder = ['新书', '未命名', '未确定', '', '待定', '暂无']
+    book_name_clean = book_name.replace('《', '').replace('》', '').strip()
+    if not book_name or book_name_clean in name_placeholder:
+        raise HTTPException(status_code=400, detail="请先在灵感对话中确认书名后再生成设定文档")
+
     # 创建任务
     task = task_manager.create_task(f"生成设定文档 {book.name}", book_id=book_id, task_type="inspiration_generate")
     
@@ -544,12 +574,120 @@ async def rename_book(book_id: str, data: RenameBookRequest):
     """重命名书籍"""
     if not data.new_name:
         raise HTTPException(status_code=400, detail="请提供新书名")
-    
+
     result = engine.rename_book(book_id, data.new_name)
     if result.get('success'):
         return {"success": True, "message": result.get('message', '书籍已重命名'), "new_name": result.get('new_name')}
     else:
         raise HTTPException(status_code=400, detail=result.get('message', '重命名失败'))
+
+
+class SetBookNameRequest(BaseModel):
+    book_name: str
+
+
+@router.post("/books/{book_id}/set-book-name")
+async def set_book_name(book_id: str, data: SetBookNameRequest):
+    """设置书籍书名（用于创建时书名未确认的情况）"""
+    if not data.book_name:
+        raise HTTPException(status_code=400, detail="请提供书名")
+
+    book = engine.sm.get_book_by_id(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="书籍不存在")
+
+    book.name = data.book_name
+    engine.save_book_meta(book)
+
+    # 更新 book_index 中书名
+    with engine.sm._lock:
+        for b in engine.sm.book_index.get("books", []):
+            if b.get("id") == book_id:
+                b["name"] = data.book_name
+                break
+
+    return {
+        "success": True,
+        "message": "书名已设置",
+        "book_name": data.book_name,
+        "book_id": book_id
+    }
+
+
+class SetBookNameAndContinueRequest(BaseModel):
+    book_name: str
+    brief: str
+
+
+@router.post("/books/{book_id}/set-book-name-and-continue")
+async def set_book_name_and_continue(book_id: str, data: SetBookNameAndContinueRequest):
+    """设置书名并继续创建工作流"""
+    if not data.book_name:
+        raise HTTPException(status_code=400, detail="请提供书名")
+
+    book = engine.sm.get_book_by_id(book_id)
+    if not book:
+        raise HTTPException(status_code=404, detail="书籍不存在")
+
+    # 更新书名
+    book.name = data.book_name
+    engine.save_book_meta(book)
+
+    with engine.sm._lock:
+        for b in engine.sm.book_index.get("books", []):
+            if b.get("id") == book_id:
+                b["name"] = data.book_name
+                break
+
+    # 创建新任务继续工作流
+    task = task_manager.create_task(f"创建新书 {data.book_name}", book_id=book_id, task_type="create_book")
+
+    def run():
+        try:
+            task_manager.update_task(task.id, status=TaskStatus.RUNNING, progress=5, message="开始创建...")
+
+            def progress_callback(step, progress, message):
+                task_manager.update_task(
+                    task.id,
+                    step=step,
+                    progress=progress,
+                    message=message
+                )
+
+            def cancel_check():
+                if task_manager.is_all_terminated():
+                    return True
+                if task_manager.is_cancelled(task.id):
+                    return True
+                return False
+
+            # 用带书名的简报继续执行
+            full_brief = f"书名：{data.book_name}\n{data.brief}"
+            result = engine.create_book_workflow_with_progress(
+                full_brief, book_id, progress_callback, cancel_check
+            )
+
+            if result.get('success'):
+                task_manager.update_task(task.id, status=TaskStatus.SUCCESS,
+                    progress=100, message="创建完成", result=result)
+            else:
+                task_manager.update_task(task.id, status=TaskStatus.FAILED,
+                    message=f"创建失败: {result.get('message', '')}")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            task_manager.update_task(task.id, status=TaskStatus.FAILED, message=f"错误: {str(e)}")
+
+    import threading
+    threading.Thread(target=run, daemon=True).start()
+
+    return {
+        "success": True,
+        "task_id": task.id,
+        "book_id": book_id,
+        "book_name": data.book_name,
+        "message": "继续创建中..."
+    }
 
 
 @router.get("/books/current")

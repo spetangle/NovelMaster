@@ -2173,7 +2173,7 @@ async function selectChapter(chapterId) {
         console.warn('无效的章节ID');
         return;
     }
-    
+
     const res = await api(`/api/chapters/${encodeURIComponent(chapterId)}`);
     if (res.success) {
         currentChapter = res.chapter;
@@ -2181,6 +2181,23 @@ async function selectChapter(chapterId) {
         await loadChapterList();
         viewChapterContent();
         updateChapterHintUI();  // 更新章节提示
+
+        // 更新目标章节下拉框为当前选中章节
+        const select = document.getElementById('target-chapter-select');
+        if (select && currentChapter) {
+            const chapterTitle = currentChapter.title || (currentChapter.number === 0 ? '序章' : `第${currentChapter.number}章`);
+            const optionValue = `${currentChapter.id}|${currentChapter.number}|${encodeURIComponent(chapterTitle)}`;
+            const options = select.options;
+            for (let i = 0; i < options.length; i++) {
+                const opt = options[i];
+                if (opt.value.startsWith(chapterId + '|') || opt.value.startsWith(currentChapter.number + '|')) {
+                    select.selectedIndex = i;
+                    break;
+                }
+            }
+            // 触发 change 事件以更新 selectedTargetChapter
+            onTargetChapterChange();
+        }
 
         // 更新自动续写的起始章节输入框为当前选中章节
         const autoStartChapter = document.getElementById('auto-start-chapter');
@@ -2877,14 +2894,6 @@ function updateTaskTimer() {
 let completedSteps = [];
 
 function updateTaskProgress(task) {
-    // 记录任务开始时间
-    if (!taskProgressElement && task.status === 'running') {
-        taskStartTime = Date.now();
-        completedSteps = []; // 重置已完成步骤列表
-        // 启动计时器
-        taskTimerInterval = setInterval(updateTaskTimer, 1000);
-    }
-
     // 创建或更新进度显示
     if (!taskProgressElement) {
         const messages = document.getElementById('chat-messages');
@@ -2909,6 +2918,12 @@ function updateTaskProgress(task) {
             <div class="task-message"></div>
         `;
         messages.appendChild(taskProgressElement);
+
+        // 记录任务开始时间并启动计时器
+        taskStartTime = Date.now();
+        completedSteps = [];
+        if (taskTimerInterval) clearInterval(taskTimerInterval);
+        taskTimerInterval = setInterval(updateTaskTimer, 1000);
     }
 
     // 更新进度
@@ -3005,14 +3020,44 @@ async function createNewBook() {
             const bookName = res.book_name;
             const taskId = res.task_id;
             const mode = res.mode || 'auto';
-            
+            const phase = res.phase;
+
             // 设置当前书籍
             currentBook = { id: bookId, name: bookName, is_inspiration: inspirationMode };
             localStorage.setItem('lastBookId', bookId);
-            
+
             // 显示写作页面
             hideWelcomeView();
             showWritingPage();
+
+            // 检查是否需要用户输入书名
+            if (phase === 'need_book_name') {
+                // 弹窗让用户输入书名
+                addSystemMessage('请先设置书名');
+                const userBookName = prompt('请输入书名：');
+                if (!userBookName || !userBookName.trim()) {
+                    addSystemMessage('书名不能为空，创建已取消');
+                    await goBackToBookManager();
+                    return;
+                }
+                // 调用 API 设置书名并继续创建
+                const setNameRes = await api(`/api/books/${bookId}/set-book-name-and-continue`, {
+                    method: 'POST',
+                    body: { book_name: userBookName.trim(), brief: brief }
+                });
+                if (setNameRes.success) {
+                    currentBook.name = userBookName.trim();
+                    addSystemMessage(`书名已设置为《${userBookName.trim()}》，继续创建中...`);
+                    // 启动轮询监控创建进度
+                    if (setNameRes.task_id) {
+                        startTaskPolling(setNameRes.task_id);
+                    }
+                    return;
+                } else {
+                    addSystemMessage(`书名设置失败: ${setNameRes.message || '未知错误'}`);
+                    return;
+                }
+            }
             
             if (mode === 'inspiration') {
                 // 灵感对话模式

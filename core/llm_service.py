@@ -248,6 +248,7 @@ class LLMManager:
         **kwargs
     ) -> Optional[Dict]:
         """生成JSON格式响应"""
+        print(f"[LLM] [{agent_name}] 正在生成JSON...")
         success, result = self.client.call(prompt, system_prompt, json_mode=True, **kwargs)
 
         if success:
@@ -259,10 +260,13 @@ class LLMManager:
                     text = text[3:]
                 if text.endswith("```"):
                     text = text[:-3]
-                return json.loads(text.strip())
+                data = json.loads(text.strip())
+                print(f"[LLM] [{agent_name}] JSON生成完成")
+                return data
             except json.JSONDecodeError:
-                print(f"[LLM] JSON解析失败，原始响应: {result[:200]}")
+                print(f"[LLM] [{agent_name}] JSON解析失败，原始响应: {result[:200]}")
                 return None
+        print(f"[LLM] [{agent_name}] JSON生成失败")
         return None
 
     def batch_generate(
@@ -1062,10 +1066,13 @@ class LLMService:
         """流式生成内容"""
         if not self.config.api_key:
             return "[LLM未配置API密钥]"
-        
+
+        print(f"[LLM] [{agent_name}] 开始流式生成...")
         success, result = self.call_stream(prompt, system_prompt, agent_name, callback)
         if success:
+            print(f"[LLM] [{agent_name}] 流式生成完成 ({len(result)} 字符)")
             return result
+        print(f"[LLM] [{agent_name}] 流式生成失败: {result}")
         return f"[生成失败: {result}]"
 
     def generate_json(
@@ -1075,6 +1082,7 @@ class LLMService:
         agent_name: str = "System"
     ) -> Optional[Dict]:
         """生成JSON格式响应"""
+        print(f"[LLM] [{agent_name}] 正在生成JSON...")
         success, result = self.call(prompt, system_prompt, json_mode=True, agent_name=agent_name)
 
         if success:
@@ -1086,9 +1094,13 @@ class LLMService:
                     text = text[3:]
                 if text.endswith("```"):
                     text = text[:-3]
-                return json.loads(text.strip())
+                data = json.loads(text.strip())
+                print(f"[LLM] [{agent_name}] JSON生成完成")
+                return data
             except json.JSONDecodeError:
+                print(f"[LLM] [{agent_name}] JSON解析失败，原始响应: {result[:200]}")
                 return None
+        print(f"[LLM] [{agent_name}] JSON生成失败: {result}")
         return None
 
     def get_system_prompt(self, agent: str) -> str:
