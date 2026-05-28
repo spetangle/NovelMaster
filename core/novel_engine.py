@@ -2688,7 +2688,9 @@ class NovelEngine:
 
     # ============== 章节创作 ==============
 
-    def write_chapter(self, chapter_num: int, revise: bool = False, regenerate: bool = False, task_id: str = None) -> Dict[str, Any]:
+    def write_chapter(self, chapter_num: int, revise: bool = False, regenerate: bool = False,
+                       task_id: str = None, auto_review: bool = False, auto_revise: bool = False,
+                       review_score: int = 75) -> Dict[str, Any]:
         """
         章节创作工作流
 
@@ -2697,6 +2699,9 @@ class NovelEngine:
             revise: 是否为修订模式（基于上一次细纲和评审报告修改内容）
             regenerate: 是否为重写模式（从细纲开始重新生成）
             task_id: 任务ID（用于步骤状态更新）
+            auto_review: 是否自动评审
+            auto_revise: 是否自动修订
+            review_score: 评审达标分数
 
         Returns:
             章节创作结果
@@ -2890,26 +2895,23 @@ class NovelEngine:
                 audit_passed=False,
                 retry_count=1
             )
-            if need_revision:
-                # 质量评审失败，标记步骤失败
-                if task_id:
-                    task_manager.update_step_status(task_id, 4, StepStatus.FAILED, error=revision_msg)
-                revision_msg = "；".join(revision_reasons)
-                self.sm.update_chapter_status(
-                    book, chapter_num, "draft",
-                    audit_score=audit_result.chapter_score,
-                    audit_passed=False,
-                    retry_count=1
-                )
-                return {
-                    "success": False,
-                    "message": f"{chapter_title}触发修订：{revision_msg}",
-                    "audit_result": audit_result.to_dict(),
-                    "content": content,
-                    "outline": outline,
-                    "need_revision": True,
-                    "revision_reasons": revision_reasons
-                }
+            if task_id:
+                task_manager.update_step_status(task_id, 4, StepStatus.FAILED, error=revision_msg)
+            # 自动修订：如果开启了自动修订，则递归调用自身进行修订
+            if auto_revise and auto_review:
+                print(f"[write_chapter] 评分{audit_result.chapter_score}低于75分，自动修订...")
+                revise_result = self.write_chapter(chapter_num, revise=True, regenerate=False,
+                                                  task_id=task_id, auto_review=False, auto_revise=False)
+                return revise_result
+            return {
+                "success": False,
+                "message": f"{chapter_title}触发修订：{revision_msg}",
+                "audit_result": audit_result.to_dict(),
+                "content": content,
+                "outline": outline,
+                "need_revision": True,
+                "revision_reasons": revision_reasons
+            }
 
         # 评审通过，标记步骤完成
         if task_id:

@@ -1745,10 +1745,13 @@ async def auto_write(data: AutoWriteRequest):
 
                 while llm_retry_count < max_retries:
                     try:
-                        result = engine.write_chapter(i)
+                        result = engine.write_chapter(i, auto_review=data.auto_review,
+                                                      auto_revise=data.auto_revise,
+                                                      review_score=data.review_score)
                         results.append({
                             "chapter_num": i,
-                            "success": result.get('success', False)
+                            "success": result.get('success', False),
+                            "score": result.get('final_score') or result.get('audit_result', {}).get('chapter_score')
                         })
                         chapter_success = True
                         break
