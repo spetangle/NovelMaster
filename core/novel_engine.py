@@ -13,7 +13,7 @@ from datetime import datetime
 from dataclasses import asdict
 
 from .models import BookInfo, ChapterInfo, ChapterStatus, AuditResult, AuditDecision, HookInfo, GlobalConfig, AuditLogTable, ChapterAuditLog
-from .llm_service import LLMService, MultiProviderLLMConfig as LLMConfig, LLMError
+from .llm_service import LLMService, MultiProviderLLMConfig as LLMConfig, LLMError, AnthropicLLMClient, LLMClient, ProviderConfig
 from .file_manager import FileManager
 from .state_manager import StateManager
 from .word_count_template import get_chapter_level, get_level_config, get_level_adaptation_guide, format_level_prompt, CHAPTER_LEVEL_CONFIGS
@@ -134,7 +134,10 @@ class NovelEngine:
                     retry_times=provider.retry_times,
                     retry_delay=provider.retry_delay
                 )
-                self.llm_manager.client = LLMClient(provider_config)
+                if "minimaxi" in provider.base_url.lower():
+                    self.llm_manager.client = AnthropicLLMClient(provider_config)
+                else:
+                    self.llm_manager.client = LLMClient(provider_config)
             
             self.agent_engine = AgentEngine(self.llm_manager)
         except Exception as e:
@@ -3005,7 +3008,10 @@ class NovelEngine:
                     retry_times=provider.retry_times,
                     retry_delay=provider.retry_delay
                 )
-                llm_manager.client = LLMClient(provider_config)
+                if "minimaxi" in provider.base_url.lower():
+                    llm_manager.client = AnthropicLLMClient(provider_config)
+                else:
+                    llm_manager.client = LLMClient(provider_config)
 
             agent_engine = AgentEngine(llm_manager)
 
@@ -3093,7 +3099,7 @@ class NovelEngine:
         deviation = current_words - target_words
         deviation_percent = abs(deviation) / target_words * 100 if target_words > 0 else 0
         
-        print(f"\n[_adjust_chapter_word_count] 字数检查: 当前={current_words}字, 目标={target_words}字, 偏差={deviation:+d}字 ({deviation_percent:.1f}%)")
+        print(f"\n[_adjust_chapter_word_count] 字数检查: 当前={current_words}字, 目标={target_words}字, 偏差：{deviation:+d}字 ({deviation_percent:.1f}%)")
         
         # 字数检查阈值
         # - 偏差超过15%需要调整
@@ -3128,7 +3134,7 @@ class NovelEngine:
                     client_config = self.llm_manager.client.config
                     # 如果client_config的base_url为空或无效，尝试重新初始化
                     if not getattr(client_config, 'base_url', '') or not getattr(client_config, 'api_key', ''):
-                        from core.llm_service import LLMClient, ProviderConfig
+                        from core.llm_service import LLMClient, ProviderConfig, AnthropicLLMClient
                         provider_config = ProviderConfig(
                             api_key=provider.api_key,
                             base_url=provider.base_url,
@@ -3139,7 +3145,11 @@ class NovelEngine:
                             retry_times=provider.retry_times,
                             retry_delay=provider.retry_delay
                         )
-                        self.llm_manager.client = LLMClient(provider_config)
+                        # 根据 provider 类型选择客户端
+                        if "minimaxi" in provider.base_url.lower():
+                            self.llm_manager.client = AnthropicLLMClient(provider_config)
+                        else:
+                            self.llm_manager.client = LLMClient(provider_config)
             
             if self.agent_engine:
                 # 调用扩写/缩写Agent
@@ -3168,7 +3178,7 @@ class NovelEngine:
                     new_deviation = adjusted_words - target_words
                     new_deviation_percent = abs(new_deviation) / target_words * 100 if target_words > 0 else 0
                     
-                    print(f"[_adjust_chapter_word_count] 调整完成: {adjusted_words}字, 新偏差={new_deviation:+d}字 ({new_deviation_percent:.1f}%)")
+                    print(f"[_adjust_chapter_word_count] 调整完成: {adjusted_words}字, 新偏差：{new_deviation:+d}字 ({new_deviation_percent:.1f}%)")
 
                     # 注意：不再进行第二次调整，避免LLM调用耗时过长导致卡死
                     # 如果一次调整后仍偏差过大，由后续评审环节处理

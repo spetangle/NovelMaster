@@ -120,6 +120,14 @@ class LLMClient:
         import urllib.request
         import urllib.error
 
+        is_minimax = "minimaxi" in self.config.base_url.lower() and "/anthropic" in self.config.base_url.lower()
+
+        if is_minimax:
+            # MiniMax 使用 Anthropic SDK
+            anthropic_client = AnthropicLLMClient(self.config)
+            return anthropic_client.call(prompt, system_prompt, json_mode, **kwargs)
+
+        # 其他提供商使用 urllib
         params = {
             "model": kwargs.get("model", self.config.model),
             "messages": [],
@@ -128,38 +136,26 @@ class LLMClient:
         }
 
         if system_prompt:
-            params["messages"].append({"role": "system", "content": system_prompt})
+            chinese_suffix = "\n\n【重要】你必须使用中文回复，不要输出任何英文内容。"
+            enhanced_system_prompt = system_prompt + chinese_suffix
+            params["messages"].append({"role": "system", "content": enhanced_system_prompt})
         params["messages"].append({"role": "user", "content": prompt})
 
         if json_mode:
             params["response_format"] = {"type": "json_object"}
-
-        # MiniMax Anthropic 兼容端点检测
-        is_minimax_anthropic = "minimaxi" in self.config.base_url.lower() and "/anthropic" in self.config.base_url.lower()
-
-        # MiniMax max_tokens 上限为 204800
-        if is_minimax_anthropic and params.get("max_tokens", 204800) > 204800:
-            params["max_tokens"] = 204800
-            print(f"[LLM] MiniMax max_tokens 已限制为 204800")
+            user_msg = params["messages"][-1]["content"]
+            params["messages"][-1]["content"] = user_msg + "\n\n【重要】你必须返回有效的JSON格式，不要返回任何其他文本内容。"
 
         payload = json.dumps(params).encode('utf-8')
 
         for attempt in range(self.config.retry_times):
             try:
-                # 根据 endpoint 类型选择 URL 和 headers
-                if is_minimax_anthropic:
-                    req_url = f"{self.config.base_url}/v1/messages"
-                    headers = {
-                        "X-Api-Key": self.config.api_key,
-                        "Content-Type": "application/json",
-                        "anthropic-version": "2023-06-01"
-                    }
-                else:
-                    req_url = f"{self.config.base_url}/chat/completions"
-                    headers = {
-                        "Authorization": f"Bearer {self.config.api_key}",
-                        "Content-Type": "application/json"
-                    }
+                base = self.config.base_url.rstrip('/')
+                req_url = f"{base}/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {self.config.api_key}",
+                    "Content-Type": "application/json"
+                }
 
                 req = urllib.request.Request(
                     req_url,
@@ -176,7 +172,14 @@ class LLMClient:
                         content = result["choices"][0]["message"]["content"]
                         return True, content
                     if "content" in result:
-                        content = result["content"][0]["text"] if result["content"] else ""
+                        content_blocks = result.get("content", [])
+                        content = ""
+                        for block in content_blocks:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                content += block.get("text", "")
+                        if not content:
+                            print(f"[LLM] ⚠️ text内容为空，LLM未返回有效内容")
+                            return False, "LLM未返回有效内容"
                         return True, content
 
                 return False, "响应格式异常"
@@ -201,6 +204,104 @@ class LLMClient:
         return False, "重试次数耗尽"
 
 
+class AnthropicLLMClient:
+    """使用 Anthropic SDK 调用 MiniMax（Anthropic API 兼容端点）"""
+
+    def __init__(self, config):
+        self.config = config
+
+    def call(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        json_mode: bool = False,
+        **kwargs
+    ) -> Tuple[bool, str]:
+        """使用 Anthropic SDK 调用 MiniMax"""
+        import anthropic
+
+        model = kwargs.get("model", self.config.model)
+        max_tokens = kwargs.get("max_tokens", self.config.max_tokens)
+        temperature = kwargs.get("temperature", self.config.temperature)
+        top_p = kwargs.get("top_p", getattr(self.config, 'top_p', 0.95))
+
+        # MiniMax Anthropic API max_tokens 上限为 196608
+        if max_tokens > 196608:
+            max_tokens = 196608
+
+        # 构建系统提示词（确保中文）
+        system_text = None
+        if system_prompt:
+            chinese_suffix = "\n\n【重要】你必须使用中文回复，不要输出任何英文内容。"
+            system_text = system_prompt + chinese_suffix
+
+        # 构建消息
+        messages = []
+        if json_mode:
+            # JSON 模式时在 user 消息中强调 JSON 格式
+            user_content = prompt + "\n\n【重要】你必须返回有效的JSON格式，不要返回任何其他文本内容。"
+        else:
+            user_content = prompt
+
+        messages.append({
+            "role": "user",
+            "content": user_content
+        })
+
+        call_timeout = max(getattr(self.config, 'timeout', 600), 600)
+        start_time = time.time()
+
+        for attempt in range(self.config.retry_times):
+            try:
+                # MiniMax 使用 Anthropic SDK
+                # base_url 形如 https://api.minimaxi.com/anthropic/v1，需要去掉 /v1
+                base = self.config.base_url.rstrip('/')
+                if base.endswith('/v1'):
+                    base = base[:-3]
+                client = anthropic.Anthropic(
+                    base_url=base,
+                    api_key=self.config.api_key,
+                    timeout=call_timeout,
+                )
+
+                print(f"[AnthropicLLMClient] 调用 MiniMax model={model}, max_tokens={max_tokens}...")
+
+                extra_kwargs = {}
+                if top_p and top_p < 1.0:
+                    extra_kwargs["top_p"] = top_p
+
+                response = client.messages.create(
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    system=system_text,
+                    messages=messages,
+                    **extra_kwargs
+                )
+
+                # 解析响应
+                content = ""
+                for block in response.content:
+                    if block.type == "text":
+                        content += block.text
+
+                if not content:
+                    print(f"[AnthropicLLMClient] ⚠️ text内容为空")
+                    return False, "LLM未返回有效内容"
+
+                print(f"[AnthropicLLMClient] ✅ 生成完成 ({len(content)} 字符) [{time.time() - start_time:.1f}s]")
+                return True, content
+
+            except Exception as e:
+                print(f"[AnthropicLLMClient] ⚠️ Exception: {type(e).__name__}: {e}")
+                if attempt < self.config.retry_times - 1:
+                    time.sleep(self.config.retry_delay)
+                    continue
+                return False, f"调用失败: {str(e)}"
+
+        return False, "重试次数耗尽"
+
+
 # ============== LLM 管理器 ==============
 
 class LLMManager:
@@ -211,8 +312,17 @@ class LLMManager:
     def __init__(self, config_path: Optional[str] = None):
         self.config_path = config_path or self.DEFAULT_CONFIG_PATH
         self.config = self._load_config()
-        self.client = LLMClient(self.config)
+        self._init_client()
         self._token_usage = {"prompt_tokens": 0, "completion_tokens": 0}
+
+    def _init_client(self):
+        """根据提供商类型初始化客户端"""
+        provider = self.config.get_active_provider()
+        if provider and "minimaxi" in provider.base_url.lower():
+            # MiniMax 使用 Anthropic SDK
+            self.client = AnthropicLLMClient(provider)
+        else:
+            self.client = LLMClient(provider)
 
     def _load_config(self):
         """加载配置（支持多提供商JSON格式）"""
@@ -794,7 +904,7 @@ class LLMService:
         **kwargs
     ) -> Tuple[bool, str]:
         """调用大模型
-        
+
         Args:
             prompt: 用户输入
             system_prompt: 系统提示词
@@ -810,29 +920,32 @@ class LLMService:
         if not agent_name:
             agent_name = role_name
 
+        is_minimax = "minimaxi" in self.config.base_url.lower() and "/anthropic" in self.config.base_url.lower()
+
+        if is_minimax:
+            # MiniMax 使用 Anthropic SDK
+            anthropic_client = AnthropicLLMClient(self.config)
+            return anthropic_client.call(prompt, system_prompt, json_mode, agent_name=agent_name, **kwargs)
+
+        # 其他提供商使用 urllib
         params = {
             "model": kwargs.get("model", self.config.model),
             "messages": [],
             "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
             "temperature": kwargs.get("temperature", self.config.temperature),
         }
-        # 自定义超时（章节生成等耗时任务可传入更长超时）
         call_timeout = max(kwargs.get("timeout", self.config.timeout), 600)
 
         if system_prompt:
-            params["messages"].append({"role": "system", "content": system_prompt})
+            chinese_suffix = "\n\n【重要】你必须使用中文回复，不要输出任何英文内容。"
+            enhanced_system_prompt = system_prompt + chinese_suffix
+            params["messages"].append({"role": "system", "content": enhanced_system_prompt})
         params["messages"].append({"role": "user", "content": prompt})
 
         if json_mode:
             params["response_format"] = {"type": "json_object"}
-
-        # MiniMax Anthropic 兼容端点检测
-        is_minimax_anthropic = "minimaxi" in self.config.base_url.lower() and "/anthropic" in self.config.base_url.lower()
-
-        # MiniMax max_tokens 上限为 204800
-        if is_minimax_anthropic and params.get("max_tokens", 204800) > 204800:
-            params["max_tokens"] = 204800
-            print(f"[LLM] MiniMax max_tokens 已限制为 204800")
+            user_msg = params["messages"][-1]["content"]
+            params["messages"][-1]["content"] = user_msg + "\n\n【重要】你必须返回有效的JSON格式，不要返回任何其他文本内容。"
 
         payload = json.dumps(params).encode('utf-8')
 
@@ -841,20 +954,12 @@ class LLMService:
 
         for attempt in range(self.config.retry_times):
             try:
-                # 根据 endpoint 类型选择 URL 和 headers
-                if is_minimax_anthropic:
-                    req_url = f"{self.config.base_url}/v1/messages"
-                    headers = {
-                        "X-Api-Key": self.config.api_key,
-                        "Content-Type": "application/json",
-                        "anthropic-version": "2023-06-01"
-                    }
-                else:
-                    req_url = f"{self.config.base_url}/chat/completions"
-                    headers = {
-                        "Authorization": f"Bearer {self.config.api_key}",
-                        "Content-Type": "application/json"
-                    }
+                base = self.config.base_url.rstrip('/')
+                req_url = f"{base}/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {self.config.api_key}",
+                    "Content-Type": "application/json"
+                }
                 print(f"[LLM] [{agent_name}] 请求URL: POST {req_url}")
 
                 req = urllib.request.Request(
@@ -869,9 +974,7 @@ class LLMService:
 
                     if "choices" in result and len(result["choices"]) > 0:
                         raw_content = result["choices"][0]["message"]["content"]
-                        # 清理AI思考过程和元数据
                         content = self._clean_content(raw_content)
-                        # 记录成功日志（使用原始内容用于调试）
                         self._write_log(f"LLM调用成功 [{agent_name}]", {
                             "Agent": agent_name,
                             "Role": role_name,
@@ -883,7 +986,6 @@ class LLMService:
                         print(f"[LLM] [{agent_name}] 生成完成 ({len(content)} 字符) [{time.time() - start_time:.1f}s]")
                         return True, content
 
-                # 记录失败日志
                 self._write_log(f"LLM响应异常 [{agent_name}]", {
                     "Agent": agent_name,
                     "Model": params["model"],
@@ -901,7 +1003,6 @@ class LLMService:
                 if attempt < self.config.retry_times - 1:
                     time.sleep(self.config.retry_delay)
                     continue
-                # 记录HTTP错误日志
                 self._write_log(f"LLM HTTP错误 [{agent_name}]", {
                     "Agent": agent_name,
                     "Model": params["model"],
@@ -913,7 +1014,6 @@ class LLMService:
                 if attempt < self.config.retry_times - 1:
                     time.sleep(self.config.retry_delay)
                     continue
-                # 记录网络错误日志
                 self._write_log(f"LLM网络错误 [{agent_name}]", {
                     "Agent": agent_name,
                     "Model": params["model"],
@@ -923,7 +1023,6 @@ class LLMService:
                 print(f"[LLM] [{agent_name}] 网络错误: {str(e)} [{time.time() - start_time:.1f}s]")
                 return False, f"网络错误: {str(e)}"
             except Exception as e:
-                # 记录异常日志
                 self._write_log(f"LLM调用异常 [{agent_name}]", {
                     "Agent": agent_name,
                     "Model": params["model"],
@@ -970,7 +1069,15 @@ class LLMService:
         call_timeout = max(kwargs.get("timeout", self.config.timeout), 600)
 
         if system_prompt:
-            params["messages"].append({"role": "system", "content": system_prompt})
+            # 确保回复为中文
+            chinese_suffix = "\n\n【重要】你必须使用中文回复，不要输出任何英文内容。"
+            enhanced_system_prompt = system_prompt + chinese_suffix
+            # MiniMax Anthropic 兼容端点：使用顶层 system 参数
+            is_minimax_anthropic = "minimaxi" in self.config.base_url.lower() and "/anthropic" in self.config.base_url.lower()
+            if is_minimax_anthropic:
+                params["system"] = enhanced_system_prompt
+            else:
+                params["messages"].append({"role": "system", "content": enhanced_system_prompt})
         params["messages"].append({"role": "user", "content": prompt})
 
         payload = json.dumps(params).encode('utf-8')
@@ -986,15 +1093,20 @@ class LLMService:
         for attempt in range(self.config.retry_times):
             try:
                 # 根据 endpoint 类型选择 URL 和 headers
+                base = self.config.base_url.rstrip('/')
                 if is_minimax_anthropic:
-                    req_url = f"{self.config.base_url}/v1/messages"
+                    # MiniMax Anthropic 兼容端点：base_url 形如 https://api.minimaxi.com/anthropic/v1
+                    # 去掉 /v1 尾缀，API 路径为 /messages
+                    if base.endswith('/v1'):
+                        base = base[:-3]
+                    req_url = f"{base}/messages"
                     headers = {
                         "X-Api-Key": self.config.api_key,
                         "Content-Type": "application/json",
                         "anthropic-version": "2023-06-01"
                     }
                 else:
-                    req_url = f"{self.config.base_url}/chat/completions"
+                    req_url = f"{base}/chat/completions"
                     headers = {
                         "Authorization": f"Bearer {self.config.api_key}",
                         "Content-Type": "application/json"

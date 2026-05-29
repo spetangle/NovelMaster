@@ -2769,3 +2769,704 @@ body {
     background: var(--bg-hover);
     border-color: var(--primary-color);
 }
+
+/* ==================== 新布局样式 ==================== */
+
+/* 头部布局 */
+.header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 56px;
+    padding: 0 1rem;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    flex: 1;
+}
+
+.header-center {
+    flex: 1;
+    text-align: center;
+}
+
+.header-right {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+.header-book-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-left: 0.5rem;
+}
+
+/* 任务状态区 */
+.task-status-area {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.375rem 0.75rem;
+    background: var(--bg-dark);
+    border-radius: 6px;
+    font-size: 0.875rem;
+}
+
+.task-status-name {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.task-status-progress {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+}
+
+.task-controls {
+    display: flex;
+    gap: 0.25rem;
+}
+
+/* 新写作页面布局 - 三栏 */
+.writing-page {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+    position: relative;
+}
+
+/* 左侧区域 2/5 宽度 */
+.left-section {
+    width: 40%;
+    min-width: 400px;
+    max-width: 900px;
+    background: var(--bg-card);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+}
+
+/* 标签页切换 */
+.content-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.content-tab-btn {
+    flex: 1;
+    padding: 0.75rem;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    border-bottom: 2px solid transparent;
+}
+
+.content-tab-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+}
+
+.content-tab-btn.active {
+    color: var(--primary-color);
+    border-bottom-color: var(--primary-color);
+}
+
+/* 标签页内容 */
+.content-tab-content {
+    display: none;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+}
+
+.content-tab-content.active {
+    display: flex;
+}
+
+/* 设定文档列表 */
+.doc-nav-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.5rem;
+}
+
+.doc-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.625rem 0.75rem;
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--text-secondary);
+    transition: all 0.2s;
+    font-size: 0.875rem;
+}
+
+.doc-nav-item:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.doc-nav-item.active {
+    background: var(--primary-color);
+    color: white;
+}
+
+.doc-nav-item-icon {
+    font-size: 1rem;
+}
+
+.doc-nav-item-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 章节内容区域 */
+#tab-chapters {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+}
+
+/* 章节工具栏 - 顶部 */
+.chapter-tools-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    background: var(--bg-dark);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.chapter-tools-bar .chapter-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0;
+}
+
+.chapter-tools-bar .chapter-selection-tools {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.chapter-tools-bar .auto-generate-tool {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    background: var(--bg-card);
+    border-radius: 6px;
+}
+
+/* 章节展示区 */
+.chapter-grid-section {
+    flex: 1;
+    padding: 0.75rem;
+    overflow-y: auto;
+}
+
+.chapter-grid-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+}
+
+.chapter-grid-title {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.chapter-grid-count {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.chapter-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.75rem;
+}
+
+.chapter-grid-item {
+    background: var(--bg-dark);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.75rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+}
+
+.chapter-grid-item:hover {
+    border-color: var(--primary-color);
+    transform: translateY(-1px);
+}
+
+.chapter-grid-item.selected {
+    border-color: var(--primary-color);
+    background: rgba(99, 102, 241, 0.1);
+}
+
+.chapter-grid-item.locked {
+    opacity: 0.7;
+}
+
+.chapter-grid-item.locked::after {
+    content: "🔒";
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    font-size: 0.75rem;
+}
+
+.chapter-grid-number {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.25rem;
+}
+
+.chapter-grid-title-text {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-bottom: 0.5rem;
+}
+
+.chapter-grid-info {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.chapter-grid-score {
+    padding: 0.125rem 0.375rem;
+    border-radius: 4px;
+    font-size: 0.625rem;
+    font-weight: 600;
+}
+
+.chapter-grid-score.pass {
+    background: rgba(34, 197, 94, 0.2);
+    color: #22c55e;
+}
+
+.chapter-grid-score.fail {
+    background: rgba(239, 68, 68, 0.2);
+    color: #ef4444;
+}
+
+.chapter-grid-score.pending {
+    background: rgba(107, 114, 128, 0.2);
+    color: #6b7280;
+}
+
+/* 章节管理工具区 */
+.chapter-management {
+    padding: 1rem;
+    background: var(--bg-dark);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.chapter-selection-tools {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+}
+
+.selection-mode {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.selection-mode .btn {
+    padding: 0.25rem 0.75rem;
+    font-size: 0.75rem;
+}
+
+.selection-mode .btn.active {
+    background: var(--primary-color);
+    color: white;
+}
+
+.selection-info {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.chapter-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.chapter-actions .btn-tool {
+    padding: 0.375rem 0.75rem;
+    font-size: 0.75rem;
+}
+
+.auto-generate-tool {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    background: var(--bg-card);
+    border-radius: 8px;
+    font-size: 0.875rem;
+    flex-wrap: wrap;
+}
+
+.auto-label {
+    color: var(--text-secondary);
+}
+
+.checkbox-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    cursor: pointer;
+}
+
+.checkbox-inline input {
+    cursor: pointer;
+}
+
+/* 左侧底部工具栏 */
+.left-section-footer {
+    padding: 0.75rem;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+/* 中间预览区 2/5 宽度 */
+/* 中间预览区 2/5 宽度 */
+.preview-panel {
+    width: 40%;
+    min-width: 400px;
+    max-width: 900px;
+    background: var(--bg-card);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+}
+
+.preview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.preview-title {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.preview-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem;
+}
+
+.preview-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-secondary);
+}
+
+/* 右侧任务池+消息区 1/5 宽度 */
+.right-panel {
+    width: 20%;
+    min-width: 200px;
+    max-width: 350px;
+    background: var(--bg-card);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+}
+
+.task-pool-section {
+    flex: 1;
+    min-height: 150px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.task-pool-header {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.task-pool-title {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.task-pool-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.5rem;
+}
+
+.task-pool-empty {
+    text-align: center;
+    padding: 2rem 1rem;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+/* 消息面板 - 右侧下方 */
+.right-panel .message-panel {
+    flex-shrink: 0;
+    max-height: 200px;
+    min-height: 100px;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+    background: var(--bg-dark);
+}
+
+.right-panel .message-header {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-card);
+}
+
+.right-panel .message-list {
+    padding: 0.5rem;
+}
+
+.right-panel .message-item {
+    margin-bottom: 0.375rem;
+    padding: 0.375rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    line-height: 1.3;
+}
+
+.right-panel .message-item.user {
+    margin-left: 1rem;
+}
+
+.right-panel .message-item.system {
+    margin-left: 0.5rem;
+    margin-right: 0.5rem;
+}
+
+.right-panel .message-item.assistant {
+    margin-right: 1rem;
+}
+
+/* 任务包块 */
+.task-package-block {
+    background: var(--bg-dark);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
+    overflow: hidden;
+}
+
+.task-package-header {
+    display: flex;
+    align-items: center;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+}
+
+.task-package-name {
+    font-weight: 500;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.task-package-status {
+    font-size: 0.75rem;
+    padding: 0.125rem 0.375rem;
+    border-radius: 4px;
+    margin-left: 0.5rem;
+}
+
+.task-package-controls {
+    display: flex;
+    gap: 0.25rem;
+    margin-left: 0.5rem;
+}
+
+.task-ctrl-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 0.125rem 0.25rem;
+    border-radius: 4px;
+    font-size: 0.875rem;
+    line-height: 1;
+}
+
+.task-ctrl-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.task-ctrl-stop:hover {
+    background: rgba(239, 68, 68, 0.2);
+    color: #ef4444;
+}
+
+.task-package-toggle {
+    cursor: pointer;
+    margin-left: 0.25rem;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+}
+
+.task-package-status.running {
+    background: rgba(34, 197, 94, 0.2);
+    color: #22c55e;
+}
+
+.task-package-status.paused {
+    background: rgba(250, 204, 21, 0.2);
+    color: #faad14;
+}
+
+.task-package-status.pending {
+    background: rgba(107, 114, 128, 0.2);
+    color: #6b7280;
+}
+
+.task-package-status.completed {
+    background: rgba(99, 102, 241, 0.2);
+    color: #6366f1;
+}
+
+.task-package-status.failed {
+    background: rgba(239, 68, 68, 0.2);
+    color: #ef4444;
+}
+
+/* 任务包展开/收起图标 */
+.task-package-toggle {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-left: 0.5rem;
+    transition: transform 0.2s;
+}
+
+.task-package-toggle.expanded {
+    transform: rotate(90deg);
+}
+
+/* 子任务列表 */
+.subtask-list {
+    padding: 0.5rem;
+}
+
+.subtask-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.subtask-item:hover {
+    background: var(--bg-hover);
+}
+
+.subtask-item.current {
+    background: rgba(99, 102, 241, 0.1);
+    color: var(--primary-color);
+}
+
+.subtask-item.completed {
+    color: #22c55e;
+}
+
+.subtask-item.failed {
+    color: #ef4444;
+}
+
+.subtask-status-icon {
+    font-size: 0.875rem;
+    width: 16px;
+    text-align: center;
+}
+
+.subtask-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.subtask-progress {
+    width: 60px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.subtask-progress-bar {
+    height: 100%;
+    background: var(--primary-color);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+
+.subtask-progress-bar.running {
+    animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}

@@ -462,7 +462,16 @@ async def generate_inspiration_docs(book_id: str):
 
     # 创建任务
     task = task_manager.create_task(f"生成设定文档 {book.name}", book_id=book_id, task_type="inspiration_generate")
-    
+
+    # 初始化任务步骤
+    task_manager.init_task_steps(task.id, [
+        "生成规划书",
+        "生成世界观设定",
+        "评审世界观设定",
+        "生成故事大纲",
+        "评审故事大纲",
+    ])
+
     def run():
         try:
             task_manager.update_task(task.id, status=TaskStatus.RUNNING, progress=0, message="开始生成...")
@@ -1110,7 +1119,8 @@ async def get_book_detail(book_id: str):
         'chapter_outline_exists': (book_path / "chapter_outline.md").exists(),
         'author_intent_exists': (book_path / "author_intent.md").exists(),
         'current_focus_exists': (book_path / "current_focus.md").exists(),
-        'characters_exists': (book_path / "characters.md").exists()
+        'characters_exists': (book_path / "characters.md").exists(),
+        'world_setting_exists': (book_path / "world_setting.md").exists()
     }
 
     # 读取主角信息
@@ -1147,7 +1157,9 @@ async def get_book_doc(book_id: str, doc_key: str):
         'book_rules': 'book_rules.md',
         'chapter_outline': 'chapter_outline.md',
         'author_intent': 'author_intent.md',
-        'current_focus': 'current_focus.md'
+        'current_focus': 'current_focus.md',
+        'characters': 'characters.md',
+        'world_setting': 'world_setting.md'
     }
 
     doc_file = doc_files.get(doc_key)
@@ -1285,6 +1297,8 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
         action_name = "评审"
     elif data.action == "revise":
         action_name = "修订"
+    elif data.action == "adjust":
+        action_name = "调整字数"
     elif data.action == "regenerate":
         action_name = "重写"
     else:
@@ -1314,7 +1328,7 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
 
     # 锁定章节
     task_manager.lock_chapter(data.book_id, chapter_num, task.id)
-    
+
     def run():
         try:
             chapter_title = f"第{chapter_num}章"
@@ -1322,6 +1336,16 @@ async def execute_write(data: ExecuteWriteRequest, background_tasks: BackgroundT
             # 检查是否已取消
             if task_manager.is_cancelled(task.id):
                 task_manager.update_task(task.id, status=TaskStatus.TERMINATED, message="任务已取消")
+                task_manager.unlock_chapter(data.book_id, chapter_num)
+                return
+
+            if data.action == "adjust":
+                # 单独调整字数
+                task_manager.update_task(task.id, status=TaskStatus.RUNNING, progress=10,
+                                        message=f"正在调整{chapter_title}字数...", step="调整字数")
+                engine.adjust_chapter_word_count_async(book.id, chapter_num, task.id)
+                task_manager.update_task(task.id, status=TaskStatus.SUCCESS, progress=100,
+                                        message=f"字数调整已启动，请在任务列表查看进度")
                 task_manager.unlock_chapter(data.book_id, chapter_num)
                 return
 
@@ -1908,6 +1932,112 @@ async def terminate_all_tasks():
         "message": f"已终止 {terminated_count} 个任务",
         "terminated_count": terminated_count
     }
+
+
+# ============== 任务包管理 ==============
+
+class CreatePackageRequest(BaseModel):
+    name: str = ""                      # 包名称，如"生成第3章"
+    book_id: str = ""
+    subtasks: list = []                  # 子任务列表
+
+
+class SubTaskRequest(BaseModel):
+    name: str = ""                      # 步骤名称
+    agent: str = ""                      # agent名称
+    input_text: str = ""
+    input_files: list = []
+    output_file: str = ""
+
+
+@router.post("/packages")
+async def create_package(data: CreatePackageRequest):
+    """创建任务包"""
+    if not data.name:
+        raise HTTPException(status_code=400, detail="请提供任务包名称")
+    if not data.book_id:
+        raise HTTPException(status_code=400, detail="请提供书籍ID")
+
+    # 转换子任务
+    from core.llm_tasks import SubTask
+    subtasks = []
+    for st_data in data.subtasks:
+        if isinstance(st_data, dict):
+            st = SubTask(
+                name=st_data.get("name", ""),
+                agent=st_data.get("agent", ""),
+                input_text=st_data.get("input_text", ""),
+                input_files=st_data.get("input_files", []),
+                output_file=st_data.get("output_file", "")
+            )
+        else:
+            st = st_data
+        subtasks.append(st)
+
+    pkg_id = task_manager.create_package(data.name, data.book_id, subtasks)
+    return {"success": True, "package_id": pkg_id, "name": data.name}
+
+
+@router.get("/packages")
+async def list_packages():
+    """获取所有任务包"""
+    packages = task_manager.get_package_queue()
+    return {"success": True, "packages": packages}
+
+
+@router.get("/packages/{pkg_id}")
+async def get_package(pkg_id: str):
+    """获取任务包详情"""
+    pkg = task_manager.get_package(pkg_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail="任务包不存在")
+    return {"success": True, "package": pkg.to_dict()}
+
+
+@router.post("/packages/{pkg_id}/pause")
+async def pause_package(pkg_id: str):
+    """暂停任务包"""
+    success = task_manager.pause_package(pkg_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="任务包不存在或无法暂停")
+    return {"success": True, "message": "任务包已暂停"}
+
+
+@router.post("/packages/{pkg_id}/resume")
+async def resume_package(pkg_id: str):
+    """继续任务包"""
+    success = task_manager.resume_package(pkg_id)
+    if not success:
+        raise HTTPException(status_code=400, detail="任务包不存在或未处于暂停状态")
+    return {"success": True, "message": "任务包已继续"}
+
+
+@router.post("/packages/{pkg_id}/stop")
+async def stop_package(pkg_id: str):
+    """停止任务包"""
+    success = task_manager.stop_package(pkg_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="任务包不存在")
+    return {"success": True, "message": "任务包已停止"}
+
+
+@router.post("/packages/{pkg_id}/start")
+async def start_package(pkg_id: str, request: Request = None):
+    """启动任务包执行"""
+    from core.task_executor import task_executor
+
+    pkg = task_manager.get_package(pkg_id)
+    if not pkg:
+        raise HTTPException(status_code=404, detail="任务包不存在")
+
+    if task_executor.is_running(pkg_id):
+        raise HTTPException(status_code=400, detail="任务包正在执行中")
+
+    success = task_executor.start_package(pkg_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="启动任务包失败")
+
+    return {"success": True, "message": "任务包已开始执行", "package_id": pkg_id}
 
 
 # ============== 文档管理 ==============

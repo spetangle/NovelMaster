@@ -105,6 +105,10 @@ class TaskManager:
         self._chapter_lock = threading.Lock()
         self._cancel_events: Dict[str, Event] = {}  # {task_id: Event}
         self._all_tasks_event = Event()  # 全局终止事件
+        # 任务包相关
+        self._packages: Dict[str, TaskPackage] = {}  # {pkg_id: TaskPackage}
+        self._package_queue: list = []  # 任务包队列
+        self._book_locks: Dict[str, str] = {}  # {book_id: pkg_id} 书籍锁
     
     def get_chapter_lock(self, book_id: str, chapter_num: int) -> Optional[str]:
         """获取章节锁状态，返回被锁定的任务ID"""
@@ -425,6 +429,90 @@ class TaskManager:
                 t.to_dict() for t in self._tasks.values()
                 if t.status == TaskStatus.RUNNING
             ]
+
+    # ============ 任务包管理方法 ============
+
+    def create_package(self, name: str, book_id: str, subtasks: list = None) -> str:
+        """创建任务包，返回 pkg_id"""
+        import uuid
+        from core.llm_tasks import SubTask, TaskPackage
+
+        pkg_id = f"pkg_{uuid.uuid4().hex[:8]}"
+        if subtasks is None:
+            subtasks = []
+        # 为子任务分配ID
+        for i, st in enumerate(subtasks):
+            if not getattr(st, 'id', ''):
+                st.id = f"st_{uuid.uuid4().hex[:8]}"
+
+        pkg = TaskPackage(
+            id=pkg_id,
+            name=name,
+            book_id=book_id,
+            subtasks=subtasks
+        )
+        with self._lock:
+            self._packages[pkg_id] = pkg
+            self._package_queue.append(pkg_id)
+        return pkg_id
+
+    def get_package(self, pkg_id: str):
+        """获取任务包"""
+        with self._lock:
+            return self._packages.get(pkg_id)
+
+    def get_package_queue(self) -> list:
+        """获取任务包队列状态"""
+        with self._lock:
+            return [{
+                "id": p.id,
+                "name": p.name,
+                "book_id": p.book_id,
+                "status": p.status,
+                "current_subtask_index": p.current_subtask_index,
+                "total_subtasks": len(p.subtasks)
+            } for p in self._packages.values()]
+
+    def pause_package(self, pkg_id: str) -> bool:
+        """暂停任务包"""
+        pkg = self.get_package(pkg_id)
+        if not pkg:
+            return False
+        pkg.pause_event.set()
+        pkg.status = TaskStatus.PAUSED
+        return True
+
+    def resume_package(self, pkg_id: str) -> bool:
+        """继续被暂停的任务包"""
+        pkg = self.get_package(pkg_id)
+        if not pkg or pkg.status != TaskStatus.PAUSED:
+            return False
+        pkg.pause_event.clear()
+        pkg.status = TaskStatus.RUNNING
+        return True
+
+    def stop_package(self, pkg_id: str) -> bool:
+        """停止任务包"""
+        pkg = self.get_package(pkg_id)
+        if not pkg:
+            return False
+        pkg.stop_event.set()
+        pkg.status = TaskStatus.STOPPED
+        return True
+
+    def acquire_book_lock(self, book_id: str, pkg_id: str) -> bool:
+        """尝试获取书籍锁"""
+        with self._lock:
+            if book_id in self._book_locks:
+                return self._book_locks[book_id] == pkg_id
+            self._book_locks[book_id] = pkg_id
+            return True
+
+    def release_book_lock(self, book_id: str, pkg_id: str):
+        """释放书籍锁"""
+        with self._lock:
+            if self._book_locks.get(book_id) == pkg_id:
+                del self._book_locks[book_id]
 
 
 # 全局任务管理器

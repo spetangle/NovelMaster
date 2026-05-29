@@ -16,6 +16,15 @@ let isInspirationMode = false;  // 是否在灵感对话模式
 let currentInspirationBookId = null;  // 当前灵感模式书籍ID
 const AUTO_SAVE_INTERVAL = 30000;  // 30秒自动保存一次
 
+// 章节选择相关状态
+let chapterSelectMode = 'single';  // 'single' | 'multi'
+let selectedChapters = new Set();  // 已选择的章节ID集合
+let chapterGridData = [];  // 章节网格数据
+
+// 任务包相关状态
+let currentPackageId = null;  // 当前任务包ID
+let packagePollInterval = null;
+
 // ==================== 页面切换 ====================
 
 // 初始化页面状态
@@ -65,6 +74,9 @@ function showWritingPage() {
     const writingPage = document.getElementById('writing-page');
     const navBackBtn = document.getElementById('btn-back-to-manager-nav');
     const resizeHandle = document.getElementById('resize-handle');
+    const bookNameEl = document.getElementById('header-book-name');
+    const taskStatusArea = document.getElementById('task-status-area');
+    const taskControls = document.getElementById('task-controls');
 
     if (bookManagerPage) bookManagerPage.style.display = 'none';
     if (writingPage) writingPage.style.display = 'flex';
@@ -72,6 +84,23 @@ function showWritingPage() {
     if (navBackBtn) navBackBtn.style.display = 'inline-flex';
     // 显示分隔条
     if (resizeHandle) resizeHandle.style.display = 'block';
+
+    // 显示书籍名称
+    if (bookNameEl) {
+        if (currentBook) {
+            bookNameEl.textContent = currentBook.name;
+            bookNameEl.style.display = 'inline';
+        } else {
+            bookNameEl.style.display = 'none';
+        }
+    }
+
+    // 隐藏任务状态区（初始状态）
+    if (taskStatusArea) taskStatusArea.style.display = 'none';
+    if (taskControls) taskControls.style.display = 'none';
+
+    // 启动任务池定时刷新
+    startTaskPoolRefresh();
 }
 
 // 返回书籍管理页
@@ -408,6 +437,9 @@ async function selectBook(bookId, silent = false) {
 
         await loadBookList();
         await loadChapterList();
+        await loadChapterGrid();  // 加载新布局的章节网格
+        await loadDocNavList();  // 加载设定文档导航
+        await loadTaskPoolList();  // 加载任务池列表
         await updateDocStatus();
         updateChapterHintUI();  // 更新章节提示
         await updateBookInfoSection();  // 更新书籍信息区域
@@ -420,6 +452,9 @@ async function selectBook(bookId, silent = false) {
 
         // 显示写作页面
         showWritingPage();
+
+        // 设置默认显示章节标签页
+        setDefaultContentTab(true);
 
         // 如果是灵感模式书籍，自动进入灵感对话模式
         if (currentBook.is_inspiration) {
@@ -918,6 +953,17 @@ async function showGuidance(context, currentDocKey = null) {
 }
 
 function addMessage(type, content) {
+    // 尝试在消息面板显示（如果存在）
+    const messageList = document.getElementById('message-list');
+    if (messageList) {
+        const msgEl = document.createElement('div');
+        msgEl.className = `message-item ${type}`;
+        msgEl.textContent = content;
+        messageList.appendChild(msgEl);
+        messageList.scrollTop = messageList.scrollHeight;
+    }
+
+    // 旧版 chat-messages 兼容
     const messages = document.getElementById('chat-messages');
     if (!messages) return;
 
@@ -1782,21 +1828,18 @@ const writeActions = {
     'continue': { name: '续写', icon: '▶️', confirmMsg: '确定要续写吗？' },
     'review': { name: '评审', icon: '🔍', confirmMsg: '确定要评审吗？' },
     'revise': { name: '修订', icon: '🔧', confirmMsg: '确定要修订吗？' },
+    'adjust': { name: '调整字数', icon: '📏', confirmMsg: '确定要调整字数吗？' },
     'regenerate': { name: '重新生成', icon: '🔄', confirmMsg: '确定要重新生成吗？这将覆盖现有内容。' }
 };
 
 // 获取操作目标章节信息
 function getTargetChapterInfo() {
-    // 优先使用用户选择的章节
-    if (selectedTargetChapter) {
-        return selectedTargetChapter;
-    }
-    // 否则使用当前选中的章节
+    // 优先使用用户选择的章节（新UI的grid选择）
     if (currentChapter) {
         return {
             id: currentChapter.id,
             number: currentChapter.number,
-            name: currentChapter.name || (currentChapter.number === 0 ? '序章' : `第${currentChapter.number}章`)
+            name: currentChapter.title || (currentChapter.number === 0 ? '序章' : `第${currentChapter.number}章`)
         };
     }
     return null;
@@ -2017,7 +2060,7 @@ async function executeWrite(action) {
 
     // 增加确认步骤，包含章节信息
     const chapterInfo = `【${target.name}】`;
-    const actionName = action === 'continue' ? '续写' : (action === 'review' ? '评审' : (action === 'revise' ? '修订' : '重新生成'));
+    const actionName = action === 'continue' ? '续写' : (action === 'review' ? '评审' : (action === 'revise' ? '修订' : (action === 'adjust' ? '调整字数' : '重新生成'));
     const confirmMsg = action === 'regenerate'
         ? `确定要重新生成 ${chapterInfo} 吗？这将覆盖现有内容。`
         : `确定要对 ${chapterInfo} 执行${actionName}吗？`;
@@ -2098,7 +2141,7 @@ async function loadChapterList() {
             const lockIcon = isLocked ? '<span class="chapter-lock" title="章节被锁定">🔒</span>' : '';
             // 章节名
             const chapterTitle = ch.title ? `<span class="chapter-title">${escapeHtml(ch.title)}</span>` : '';
-            
+
             // 状态显示逻辑 - 只显示最终评分，无评分则显示0分
             let scoreBadge = '';
             if (ch.finalized) {
@@ -2119,10 +2162,10 @@ async function loadChapterList() {
                 ? `${(wordCount / 1000).toFixed(1)}k`
                 : wordCount;
             const wordCountColor = wordCount >= 2000 ? 'color: #52c41a;' : (wordCount >= 1000 ? 'color: #1890ff;' : 'color: #999;');
-            
+
             // 章节标题用于下拉框
             const chapterFullTitle = ch.title || (ch.number === 0 ? '序章' : `第${ch.number}章`);
-            
+
             return `
                 <div class="chapter-item ${currentChapter && currentChapter.id === ch.id ? 'active' : ''} ${lockClass}"
                      data-chapter-id="${ch.id}"
@@ -2143,12 +2186,650 @@ async function loadChapterList() {
 
         // 更新撰写工具的章节选择器
         await updateChapterSelect();
-        
+
         // 如果已有章节，切换到写作工具标签页
         switchToolbarTab('write');
     } else {
         list.innerHTML = '<div style="font-size: 0.8rem; color: var(--text-secondary); padding: 0.5rem;">暂无章节</div>';
     }
+}
+
+// 加载章节网格视图（新布局）
+async function loadChapterGrid() {
+    if (!currentBook) return;
+
+    const res = await api(`/api/books/${currentBook.id}/chapters`);
+    const grid = document.getElementById('chapter-grid');
+    const countEl = document.getElementById('chapter-grid-count');
+
+    if (!grid) return;
+
+    // 获取章节锁状态
+    await refreshChapterLocks();
+
+    if (res.success && res.chapters && res.chapters.length > 0) {
+        // 保存到全局数据
+        chapterGridData = res.chapters;
+
+        // 更新计数
+        if (countEl) {
+            countEl.textContent = `共 ${res.chapters.length} 章`;
+        }
+
+        grid.innerHTML = res.chapters.map(ch => {
+            const isLocked = lockedChapters[ch.number];
+            const isSelected = selectedChapters.has(ch.id);
+            const lockedClass = isLocked ? 'locked' : '';
+            const selectedClass = isSelected ? 'selected' : '';
+
+            // 章节标题
+            const chapterTitle = ch.title || (ch.number === 0 ? '序章' : `第${ch.number}章`);
+
+            // 评分显示
+            let scoreClass = 'pending';
+            if (ch.finalized) {
+                scoreClass = 'pass';
+            } else if (ch.audit_score >= 75) {
+                scoreClass = 'pass';
+            } else if (ch.audit_score > 0) {
+                scoreClass = 'fail';
+            }
+
+            const scoreText = ch.finalized ? '✅' : (ch.audit_score > 0 ? `${ch.audit_score}分` : '待评');
+
+            // 字数
+            const wordCount = ch.word_count || 0;
+            const wordCountDisplay = wordCount >= 1000
+                ? `${(wordCount / 1000).toFixed(1)}k`
+                : wordCount;
+
+            return `
+                <div class="chapter-grid-item ${lockedClass} ${selectedClass}"
+                     data-chapter-id="${ch.id}"
+                     data-chapter-num="${ch.number}"
+                     onclick="onChapterGridItemClick(event, '${ch.id}')">
+                    <div class="chapter-grid-number">第${ch.number}章</div>
+                    <div class="chapter-grid-title-row">
+                        <span class="chapter-grid-title-text">${escapeHtml(chapterTitle)}</span>
+                        <button class="chapter-outline-btn" onclick="event.stopPropagation(); showChapterOutline('${ch.id}')" title="查看细纲">📋</button>
+                    </div>
+                    <div class="chapter-grid-info">
+                        <span class="chapter-grid-score ${scoreClass}">${scoreText}</span>
+                        <span class="chapter-grid-words">${wordCountDisplay}字</span>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        // 更新选择计数
+        updateSelectionInfo();
+    } else {
+        grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 2rem; color: var(--text-secondary);">暂无章节</div>';
+        if (countEl) countEl.textContent = '共 0 章';
+    }
+}
+
+// 章节网格项点击处理
+function onChapterGridItemClick(event, chapterId) {
+    event.stopPropagation();
+
+    const chapter = chapterGridData.find(ch => ch.id === chapterId);
+    if (!chapter) return;
+
+    if (chapterSelectMode === 'single') {
+        // 单选模式：直接选中并预览
+        selectedChapters.clear();
+        selectedChapters.add(chapterId);
+        loadChapterGrid();  // 重新渲染以更新选中状态
+        selectChapterForPreview(chapterId);
+    } else {
+        // 批量模式：切换选中状态
+        if (selectedChapters.has(chapterId)) {
+            selectedChapters.delete(chapterId);
+        } else {
+            selectedChapters.add(chapterId);
+        }
+        loadChapterGrid();  // 重新渲染以更新选中状态
+        updateSelectionInfo();
+    }
+}
+
+// 显示章节细纲（在预览区）
+async function showChapterOutline(chapterId) {
+    const chapter = chapterGridData.find(ch => ch.id === chapterId);
+    if (!chapter) return;
+
+    const previewContent = document.getElementById('preview-content');
+    const previewTitle = document.getElementById('preview-title');
+    if (!previewContent || !previewTitle) return;
+
+    previewTitle.textContent = `${chapter.title || `第${chapter.number}章`} - 细纲`;
+
+    // 尝试加载细纲文件
+    try {
+        const res = await api(`/api/books/${currentBook.id}/docs/chapter_outline`);
+        if (res.success && res.content) {
+            previewContent.innerHTML = `<div class="preview-doc">${renderMarkdown(res.content)}</div>`;
+        } else {
+            previewContent.innerHTML = `<div class="preview-empty"><p>暂无细纲</p></div>`;
+        }
+    } catch (e) {
+        previewContent.innerHTML = `<div class="preview-empty"><p>加载失败: ${e.message}</p></div>`;
+    }
+}
+
+// 选择章节进行预览
+async function selectChapterForPreview(chapterId) {
+    const res = await api(`/api/chapters/${chapterId}`);
+    if (res.success) {
+        currentChapter = res.chapter;
+        viewChapterContent(res.chapter);
+    }
+}
+
+// 设置章节选择模式
+function setChapterSelectMode(mode) {
+    chapterSelectMode = mode;
+
+    // 更新UI
+    const singleBtn = document.getElementById('btn-single-select');
+    const multiBtn = document.getElementById('btn-multi-select');
+
+    if (singleBtn) singleBtn.classList.toggle('active', mode === 'single');
+    if (multiBtn) multiBtn.classList.toggle('active', mode === 'multi');
+
+    // 切换到单选模式时清空已选择
+    if (mode === 'single') {
+        selectedChapters.clear();
+        loadChapterGrid();
+    }
+
+    updateSelectionInfo();
+}
+
+// 更新选择信息显示
+function updateSelectionInfo() {
+    const countEl = document.getElementById('selected-count');
+    const infoEl = document.getElementById('selection-info');
+
+    if (countEl) countEl.textContent = selectedChapters.size;
+    if (infoEl) {
+        infoEl.style.display = chapterSelectMode === 'multi' ? 'block' : 'none';
+    }
+}
+
+// 内容区域标签页切换
+function switchContentTab(tab) {
+    // 更新按钮状态
+    document.querySelectorAll('.content-tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+
+    // 更新内容显示
+    document.querySelectorAll('.content-tab-content').forEach(content => {
+        content.classList.toggle('active', content.id === `tab-${tab}`);
+    });
+
+    // 加载对应的数据
+    if (tab === 'chapters') {
+        loadChapterGrid();
+    } else if (tab === 'docs') {
+        loadDocNavList();
+    }
+}
+
+// 设置默认标签页（书籍创建前显示设定文档，创建后显示章节）
+function setDefaultContentTab(hasBook) {
+    const tab = hasBook ? 'chapters' : 'docs';
+    switchContentTab(tab);
+}
+
+// 批量执行操作
+async function batchExecute(action) {
+    if (!currentBook) {
+        addSystemMessage('请先选择或创建一本书');
+        return;
+    }
+
+    if (action === 'delete') {
+        // 删除选中的章节
+        if (selectedChapters.size === 0) {
+            addSystemMessage('请先选择要删除的章节');
+            return;
+        }
+        if (!confirm(`确定要删除选中的 ${selectedChapters.size} 个章节吗？`)) {
+            return;
+        }
+        for (const chapterId of selectedChapters) {
+            const chapter = chapterGridData.find(ch => ch.id === chapterId);
+            if (chapter) {
+                await api(`/api/books/${currentBook.id}/chapters/${chapter.number}`, { method: 'DELETE' });
+            }
+        }
+        selectedChapters.clear();
+        addSystemMessage('章节已删除');
+        loadChapterGrid();
+        return;
+    }
+
+    // 直接调用 executeWrite 处理
+    await executeWrite(action);
+}
+
+// 加载设定文档导航列表
+async function loadDocNavList() {
+    const navList = document.getElementById('doc-nav-list');
+    if (!navList || !currentBook) return;
+
+    const docs = [
+        { key: 'inspiration', name: '创意信息', icon: '💡' },
+        { key: 'planning', name: '创作简报', icon: '📝' },
+        { key: 'story_bible', name: '故事圣经', icon: '📖' },
+        { key: 'book_rules', name: '书籍规则', icon: '📋' },
+        { key: 'chapter_outline', name: '书籍大纲', icon: '📃' },
+        { key: 'characters', name: '人物设定', icon: '👤' },
+        { key: 'world_setting', name: '世界观', icon: '🌍' },
+    ];
+
+    navList.innerHTML = docs.map(doc => `
+        <div class="doc-nav-item" data-doc-key="${doc.key}" onclick="onDocNavClick('${doc.key}')">
+            <span class="doc-nav-item-icon">${doc.icon}</span>
+            <span class="doc-nav-item-name">${doc.name}</span>
+        </div>
+    `).join('');
+}
+
+// 设定文档导航点击
+async function onDocNavClick(docKey) {
+    // 更新选中状态
+    document.querySelectorAll('.doc-nav-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.docKey === docKey);
+    });
+
+    const previewContent = document.getElementById('preview-content');
+    const previewTitle = document.getElementById('preview-title');
+
+    // 创意信息特殊处理：展示用户输入的原始创意
+    if (docKey === 'inspiration') {
+        try {
+            const bookRes = await api(`/api/books/${currentBook.id}`);
+            if (bookRes.success && bookRes.book) {
+                const collected = bookRes.book.inspiration_collected_info || {};
+                previewTitle.textContent = getDocName(docKey);
+                const lines = [];
+                lines.push(`## ${collected.book_name || '未命名书籍'}`);
+                if (collected.genre) lines.push(`- **题材**：${collected.genre}`);
+                if (collected.platform) lines.push(`- **平台**：${collected.platform}`);
+                if (collected.words_per_chapter) lines.push(`- **章节字数**：${collected.words_per_chapter}`);
+                if (collected.total_chapters) lines.push(`- **总章节数**：${collected.total_chapters}`);
+                if (collected.background) lines.push(`- **背景设定**：${collected.background}`);
+                if (collected.protagonist) lines.push(`- **主角信息**：${collected.protagonist}`);
+                if (collected.main_conflict) lines.push(`- **核心冲突**：${collected.main_conflict}`);
+                if (collected.power_system) lines.push(`- **力量体系**：${collected.power_system}`);
+                if (collected.gold_finger) lines.push(`- **金手指**：${collected.gold_finger}`);
+                if (collected.target_audience) lines.push(`- **目标受众**：${collected.target_audience}`);
+                if (collected.lyrical_type) lines.push(`- **文风类型**：${collected.lyrical_type}`);
+                if (collected.exciting_points) lines.push(`- **爽点**：${collected.exciting_points}`);
+                if (collected.world_view) lines.push(`- **世界观**：${collected.world_view}`);
+                if (collected.story_direction) lines.push(`- **故事走向**：${collected.story_direction}`);
+                if (collected.initial_idea) lines.push(`\n## 初始创意\n${collected.initial_idea}`);
+                previewContent.innerHTML = `<div class="preview-doc">${lines.join('\n')}</div>`;
+            } else {
+                previewTitle.textContent = getDocName(docKey);
+                previewContent.innerHTML = `<div class="preview-empty"><p>无法获取创意信息</p></div>`;
+            }
+        } catch (e) {
+            previewTitle.textContent = getDocName(docKey);
+            previewContent.innerHTML = `<div class="preview-empty"><p>加载失败: ${e.message}</p></div>`;
+        }
+        return;
+    }
+
+    // 加载并预览文档内容 - 使用预览区显示
+    const res = await api(`/api/books/${currentBook.id}/docs/${docKey}`);
+
+    if (res.success && res.content !== undefined) {
+        previewTitle.textContent = getDocName(docKey);
+        previewContent.innerHTML = `<div class="preview-doc">${renderMarkdown(res.content)}</div>`;
+    } else {
+        // 文档未创建的情况
+        previewTitle.textContent = getDocName(docKey);
+        previewContent.innerHTML = `<div class="preview-empty"><p>文档不存在或未生成</p></div>`;
+    }
+}
+
+function getDocName(docKey) {
+    const names = {
+        'inspiration': '创意信息',
+        'planning': '创作简报',
+        'story_bible': '故事圣经',
+        'book_rules': '书籍规则',
+        'chapter_outline': '书籍大纲',
+        'characters': '人物设定',
+        'world_setting': '世界观'
+    };
+    return names[docKey] || docKey;
+}
+
+// ============ 任务包状态轮询 ============
+
+// 开始任务包状态轮询
+function startPackagePolling(pkgId) {
+    currentPackageId = pkgId;
+
+    // 显示任务状态区
+    const taskStatusArea = document.getElementById('task-status-area');
+    const taskControls = document.getElementById('task-controls');
+    if (taskStatusArea) taskStatusArea.style.display = 'flex';
+    if (taskControls) taskControls.style.display = 'flex';
+
+    // 立即查询一次
+    pollPackageStatus();
+
+    // 设置定时轮询
+    if (packagePollInterval) clearInterval(packagePollInterval);
+    packagePollInterval = setInterval(pollPackageStatus, 2000);
+}
+
+// 任务池定时刷新（每5秒）
+let taskPoolRefreshInterval = null;
+
+function startTaskPoolRefresh() {
+    if (taskPoolRefreshInterval) return;
+    taskPoolRefreshInterval = setInterval(() => {
+        loadTaskPoolList();
+    }, 5000);
+}
+
+function stopTaskPoolRefresh() {
+    if (taskPoolRefreshInterval) {
+        clearInterval(taskPoolRefreshInterval);
+        taskPoolRefreshInterval = null;
+    }
+}
+
+// 停止任务包状态轮询
+function stopPackagePolling() {
+    if (packagePollInterval) {
+        clearInterval(packagePollInterval);
+        packagePollInterval = null;
+    }
+    currentPackageId = null;
+
+    // 隐藏任务状态区
+    const taskStatusArea = document.getElementById('task-status-area');
+    const taskControls = document.getElementById('task-controls');
+    if (taskStatusArea) taskStatusArea.style.display = 'none';
+    if (taskControls) taskControls.style.display = 'none';
+}
+
+// 轮询任务包状态
+async function pollPackageStatus() {
+    if (!currentPackageId) return;
+
+    const res = await api(`/api/packages/${currentPackageId}`);
+    if (!res.success) {
+        stopPackagePolling();
+        return;
+    }
+
+    const pkg = res.package;
+    updateTaskStatusUI(pkg);
+
+    // 更新任务池显示
+    loadTaskPoolList();
+
+    // 如果任务包已完成或停止，停止轮询
+    if (['success', 'failed', 'stopped', 'cancelled'].includes(pkg.status)) {
+        setTimeout(stopPackagePolling, 3000);
+    }
+}
+
+// 加载任务池列表（合并 TaskManager 任务和 TaskPackage 任务包）
+async function loadTaskPoolList() {
+    const list = document.getElementById('task-pool-list');
+    if (!list) return;
+
+    try {
+        // 并行获取两种任务
+        const [packagesRes, tasksRes] = await Promise.all([
+            api('/api/packages'),
+            api('/api/tasks')
+        ]);
+
+        const packages = packagesRes.success ? (packagesRes.packages || []) : [];
+        const tasks = tasksRes.success ? (tasksRes.tasks || []) : [];
+
+        // 转换为统一格式
+        const unifiedTasks = [
+            ...packages.map(pkg => ({
+                id: pkg.id,
+                name: pkg.name,
+                status: pkg.status,
+                current_subtask_index: pkg.current_subtask_index || 0,
+                total_subtasks: pkg.total_subtasks || pkg.subtasks?.length || 0,
+                book_id: pkg.book_id,
+                subtasks: (pkg.subtasks || []).map((st, idx) => ({
+                    id: st.id || `st_${idx}`,
+                    name: st.name || st.agent,
+                    status: st.status,
+                    agent: st.agent
+                })),
+                is_package: true
+            })),
+            ...tasks.map(task => ({
+                id: task.id,
+                name: task.name,
+                status: task.status,
+                current_subtask_index: task.current_step_index || 0,
+                total_subtasks: task.steps?.length || 0,
+                book_id: task.book_id,
+                subtasks: (task.steps || []).map((step, idx) => ({
+                    id: `step_${idx}`,
+                    name: step.name,
+                    status: step.status,
+                    agent: ''
+                })),
+                is_package: false
+            }))
+        ];
+
+        // 过滤掉已取消和已终止的旧任务
+        const activeTasks = unifiedTasks.filter(t =>
+            !['cancelled', 'terminated'].includes(t.status)
+        );
+
+        if (activeTasks.length === 0) {
+            list.innerHTML = '<div class="task-pool-empty">暂无任务</div>';
+            return;
+        }
+
+        list.innerHTML = activeTasks.map(task => renderTaskPoolItem(task)).join('');
+    } catch (e) {
+        console.error('加载任务池失败:', e);
+        list.innerHTML = '<div class="task-pool-empty">加载失败</div>';
+    }
+}
+
+// 渲染任务池项
+function renderTaskPoolItem(task) {
+    const statusClass = task.status || 'pending';
+    const subtasks = task.subtasks || [];
+    const currentIndex = task.current_subtask_index || 0;
+    const isRunning = task.status === 'running';
+    const isPaused = task.status === 'paused';
+    const isCompleted = ['success', 'failed', 'stopped', 'cancelled'].includes(task.status);
+
+    const controls = `
+        ${isRunning ? `<button class="task-ctrl-btn" onclick="pauseTask('${task.id}', ${task.is_package})" title="暂停">⏸</button>` : ''}
+        ${isPaused ? `<button class="task-ctrl-btn" onclick="resumeTask('${task.id}', ${task.is_package})" title="继续">▶</button>` : ''}
+        ${isRunning || isPaused ? `<button class="task-ctrl-btn task-ctrl-stop" onclick="stopTask('${task.id}', ${task.is_package})" title="停止">⏹</button>` : ''}
+    `;
+
+    // 已完成的任务默认折叠
+    const subtaskListStyle = isCompleted ? 'style="display: none;"' : '';
+    const toggleIcon = isCompleted ? '▼' : '▶';
+
+    return `
+        <div class="task-package-block" data-task-id="${task.id}" data-is-package="${task.is_package}">
+            <div class="task-package-header">
+                <span class="task-package-name" onclick="toggleTaskPackageExpand('${task.id}', ${task.is_package})">${escapeHtml(task.name || '未命名任务')}</span>
+                <span class="task-package-status ${statusClass}">${getStatusText(task.status)}</span>
+                <span class="task-package-toggle" id="toggle-${task.id}" onclick="toggleTaskPackageExpand('${task.id}', ${task.is_package})">${toggleIcon}</span>
+                <span class="task-package-controls">${controls}</span>
+            </div>
+            <div class="subtask-list" id="subtasks-${task.id}" ${isCompleted ? 'style="display: none;"' : ''}>
+                ${subtasks.length > 0
+                    ? subtasks.map((st, idx) => renderSubtaskItem(st, idx, idx === currentIndex && task.status === 'running'))
+                    : `<div class="subtask-item">
+                        <span class="subtask-name">进度: ${task.current_subtask_index}/${task.total_subtasks}</span>
+                       </div>`
+                }
+            </div>
+        </div>
+    `;
+}
+
+// 暂停任务
+async function pauseTask(taskId, isPackage) {
+    event.stopPropagation();
+    if (isPackage) {
+        await api(`/api/packages/${taskId}/pause`, { method: 'POST' });
+    } else {
+        await api(`/api/tasks/${taskId}/cancel`, { method: 'POST' });
+    }
+    loadTaskPoolList();
+}
+
+// 继续任务
+async function resumeTask(taskId, isPackage) {
+    event.stopPropagation();
+    if (isPackage) {
+        await api(`/api/packages/${taskId}/resume`, { method: 'POST' });
+    }
+    loadTaskPoolList();
+}
+
+// 停止任务
+async function stopTask(taskId, isPackage) {
+    event.stopPropagation();
+    if (isPackage) {
+        await api(`/api/packages/${taskId}/stop`, { method: 'POST' });
+    } else {
+        await api(`/api/tasks/${taskId}/cancel`, { method: 'POST' });
+    }
+    loadTaskPoolList();
+}
+
+// 展开/收起任务
+function toggleTaskPackageExpand(taskId, isPackage) {
+    const subtaskList = document.getElementById(`subtasks-${taskId}`);
+    const toggle = document.getElementById(`toggle-${taskId}`);
+    if (!subtaskList || !toggle) return;
+
+    const isExpanded = subtaskList.style.display !== 'none';
+    subtaskList.style.display = isExpanded ? 'none' : 'block';
+    toggle.classList.toggle('expanded', !isExpanded);
+    toggle.textContent = isExpanded ? '▼' : '▶';
+}
+
+// 加载任务包列表
+async function loadTaskPoolList_original() {
+    const list = document.getElementById('task-pool-list');
+    if (!list) return;
+
+    const res = await api('/api/packages');
+    if (!res.success || !res.packages || res.packages.length === 0) {
+        list.innerHTML = '<div class="task-pool-empty">暂无任务</div>';
+        return;
+    }
+
+    list.innerHTML = res.packages.map(pkg => renderTaskPackageBlock(pkg)).join('');
+}
+
+// 渲染子任务项
+function renderSubtaskItem(subtask, index, isCurrent) {
+    const statusClass = getSubtaskStatusClass(subtask.status);
+    const statusIcon = getSubtaskStatusIcon(subtask.status);
+
+    return `
+        <div class="subtask-item ${statusClass} ${isCurrent ? 'current' : ''}">
+            <span class="subtask-status-icon">${statusIcon}</span>
+            <span class="subtask-name">${escapeHtml(subtask.name || subtask.agent)}</span>
+        </div>
+    `;
+}
+
+// 获取子任务状态样式类
+function getSubtaskStatusClass(status) {
+    switch (status) {
+        case 'success': return 'completed';
+        case 'failed': return 'failed';
+        case 'running': return 'current';
+        default: return '';
+    }
+}
+
+// 获取子任务状态图标
+function getSubtaskStatusIcon(status) {
+    switch (status) {
+        case 'success': return '✅';
+        case 'failed': return '❌';
+        case 'running': return '⏳';
+        case 'skipped': return '⏭️';
+        default: return '⏹️';
+    }
+}
+
+// 获取状态文本
+function getStatusText(status) {
+    const texts = {
+        'pending': '等待中',
+        'running': '进行中',
+        'paused': '已暂停',
+        'success': '已完成',
+        'failed': '失败',
+        'stopped': '已停止',
+        'cancelled': '已取消'
+    };
+    return texts[status] || status;
+}
+
+// 更新任务状态UI
+function updateTaskStatusUI(pkg) {
+    const nameEl = document.getElementById('task-status-name');
+    const progressEl = document.getElementById('task-status-progress');
+    const pauseBtn = document.getElementById('btn-task-pause');
+    const resumeBtn = document.getElementById('btn-task-resume');
+
+    if (nameEl) nameEl.textContent = pkg.name || '任务包';
+    if (progressEl) {
+        const current = pkg.current_subtask_index + 1;
+        const total = pkg.total_subtasks || pkg.subtasks?.length || 0;
+        progressEl.textContent = `${pkg.status} (${current}/${total})`;
+    }
+
+    // 更新按钮状态
+    if (pauseBtn) pauseBtn.style.display = pkg.status === 'running' ? 'inline-flex' : 'none';
+    if (resumeBtn) resumeBtn.style.display = pkg.status === 'paused' ? 'inline-flex' : 'none';
+}
+
+// 暂停当前任务
+async function pauseCurrentTask() {
+    if (!currentPackageId) return;
+    await api(`/api/packages/${currentPackageId}/pause`, { method: 'POST' });
+}
+
+// 继续当前任务
+async function resumeCurrentTask() {
+    if (!currentPackageId) return;
+    await api(`/api/packages/${currentPackageId}/resume`, { method: 'POST' });
+}
+
+// 停止当前任务
+async function stopCurrentTask() {
+    if (!currentPackageId) return;
+    await api(`/api/packages/${currentPackageId}/stop`, { method: 'POST' });
 }
 
 // 刷新章节锁状态
